@@ -206,6 +206,9 @@ static float umidAdeq;  //Variável que salva a umidade adequada configurada
 static int tempoAtivacaoProvisoria; //Armazena o tempo minimo que a bomba precisa ser ativada em caso de urgencia
 static int tempoAtivaçãoTotal;      //Armazena o tempo total diário de ativação da bomba
 static int tempoAtivaçãoPorPeriodo; //Armazena o tempo que a bomba deve ser ativada em cada período de tempo
+static int contaAtivacaoRestante;  //Conta quantas ativações restantes da bomba no dia
+static int tempoAtivacaoQuePassou; //Conta quantas vezes passou com a bomba ligada
+
 
 //Variáveis que armazenam as horas fixas de ativação da bomba
 static int horaAtivacao1[2];  
@@ -917,10 +920,8 @@ void vDecision( void * pvParameters ){
     tempoAtivacaoProvisoria = t1m;
     tempoAtivaçãoTotal = t30m;
     tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/3;
-
-    int contaAtivacaoRestante = 3;  //Conta quantas ativações restantes da bomba no dia
-
-    int tempoAtivacaoQuePassou = 0;
+    contaAtivacaoRestante = 3; 
+    tempoAtivacaoQuePassou = 0;
 
     //Variáveis referentes aos sensores
     float umidade = 0.0f;  //Variável para salvar o valor de umidade localmente
@@ -994,7 +995,7 @@ void vDecision( void * pvParameters ){
                 condicaoAtivacao3 = timestampMarker[2] == 0 && timeinfo.tm_hour == horaAtivacao1[0] && timeinfo.tm_min == horaAtivacao1[1];
 
                 //Verifica se é para ativar a bomba de ativação da bomba
-                if(condicaoAtivacao1 || condicaoAtivacao2 || condicaoAtivacao3){
+                if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE && (condicaoAtivacao1 || condicaoAtivacao2 || condicaoAtivacao3)){
                     
                     //Marca que passou do timestamp
                     if(condicaoAtivacao1){
@@ -1036,6 +1037,9 @@ void vDecision( void * pvParameters ){
                     //Com timer
                     comTimer = 1;
 
+                    //Devolve o semaforo de valores de controle
+                    xSemaphoreGive(dallyControlValuesSemaphore);
+                    
                     //Atualiza o duty cycle e ativa a bomba
                     ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_ON));
                     ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
@@ -1050,7 +1054,7 @@ void vDecision( void * pvParameters ){
                     timeDiff = tmDifferenceInMinutes(timeinfo, ultimaAtivacao);
 
                     //Se tiver passado do tempo máximo
-                    if(timeDiff > tempoAtivacaoProvisoria){
+                    if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE && timeDiff > tempoAtivacaoProvisoria){
 
                         //Altera a variável para desligado
                         bombaDagua = BOMBA_DESLIGADA;
@@ -1065,6 +1069,9 @@ void vDecision( void * pvParameters ){
                         if(contaAtivacaoRestante > 0){
                             tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
                         }
+
+                        //Devolve o semaforo de valores de controle
+                        xSemaphoreGive(dallyControlValuesSemaphore);
 
                         //Atualiza o duty cycle e desliga a bomba
                         ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_OFF));
@@ -1074,7 +1081,7 @@ void vDecision( void * pvParameters ){
                     //Calcula a diferença de tempo
                     timeDiff = tmDifferenceInMinutes(timeinfo, ultimaAtivacao);
 
-                    if(timeDiff > tempoAtivaçãoPorPeriodo){
+                    if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE && timeDiff > tempoAtivaçãoPorPeriodo){
                         //Altera a variável para desligado
                         bombaDagua = BOMBA_DESLIGADA;
 
@@ -1088,6 +1095,9 @@ void vDecision( void * pvParameters ){
                         if(contaAtivacaoRestante > 0){
                             tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
                         }
+
+                        //Devolve o semaforo de valores de controle
+                        xSemaphoreGive(dallyControlValuesSemaphore);
 
                         //Atualiza o duty cycle e desliga a bomba
                         ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_OFF));
@@ -1156,9 +1166,9 @@ void vDallyReset( void * pvParameters ){
                 nextDay = timeinfo.tm_wday + 1;
             }
 
-            //Carrega os valores padrões de tempo 
-            tempoAtivacaoProvisoria = t1m;
-            tempoAtivaçãoTotal = t30m;
+            //Carrega os valores padrões de tempo
+            contaAtivacaoRestante = 3;
+            tempoAtivacaoQuePassou = 0;
             tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/3;
 
             xSemaphoreGive(dallyControlValuesSemaphore);
