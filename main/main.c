@@ -156,6 +156,9 @@
 #define timeHour3 18 
 #define timeMin3 30
 
+#define timeHourNotConf 24 
+#define timeMinNotConf 60
+
 //______________________________DEFINIÇÕES_PARA_TÓPICOS_DE_MQTT______________________________
 
 #define topicoLDR "VASO_0/LDR"
@@ -167,7 +170,8 @@
 
 #define temperaturaAdequadaPadrão 35
 #define umidadeAdequadaPadrão 70
-
+#define quantidadeAtivaçõesPadrão 3
+#define quantidadeAtivaçõesMaxima 10
 //_____________________________________VARIÁVEIS_GLOBAIS_____________________________________
 
 static const char *MQTT5 = "MQTT5";     //Tag para os Logs referentes ao MQTT
@@ -203,14 +207,17 @@ static float shr_pct; //SOIL HYGROMETER - Valor da humidade
 static float tempAdeq;  //Variável que salva a temperatura adequada configurada
 static float umidAdeq;  //Variável que salva a umidade adequada configurada
 
+static short int qtdAtivacao;
 static int tempoAtivacaoProvisoria; //Armazena o tempo minimo que a bomba precisa ser ativada em caso de urgencia
 static int tempoAtivaçãoTotal;      //Armazena o tempo total diário de ativação da bomba
 static int tempoAtivaçãoPorPeriodo; //Armazena o tempo que a bomba deve ser ativada em cada período de tempo
+static int contaAtivacaoRestante;  //Conta quantas ativações restantes da bomba no dia
+static int tempoAtivacaoQuePassou; //Conta quantas vezes passou com a bomba ligada
+static bool timestampMarker[quantidadeAtivaçõesMaxima]; //Marca quais tempos do dia ele já passaram
 
 //Variáveis que armazenam as horas fixas de ativação da bomba
-static int horaAtivacao1[2];  
-static int horaAtivacao2[2];
-static int horaAtivacao3[2];
+static int horaAtivacao[quantidadeAtivaçõesMaxima];  
+static int minAtivacao[quantidadeAtivaçõesMaxima];
 
 //Estado da bomba de água
 typedef enum{
@@ -826,14 +833,31 @@ void app_main(void){
     esp_log_level_set("transport", ESP_LOG_VERBOSE);
     esp_log_level_set("outbox", ESP_LOG_VERBOSE);
 
-    horaAtivacao1[0] = timeHour1;
-    horaAtivacao1[1] = timeMin1;
+    //Inicializa o as variáveis de tempo
+    for(int i = 0; i < quantidadeAtivaçõesMaxima; i++){
+        switch (i)
+        {
+        case 0:
+            horaAtivacao[i] = timeHour1;
+            minAtivacao[i] = timeMin1;
+            break;
 
-    horaAtivacao2[0] = timeHour2;
-    horaAtivacao2[1] = timeMin2;
+        case 1:
+            horaAtivacao[i] = timeHour2;
+            minAtivacao[i] = timeMin2;
+            break;
 
-    horaAtivacao3[0] = timeHour3;
-    horaAtivacao3[1] = timeMin3;
+        case 2:
+            horaAtivacao[i] = timeHour3;
+            minAtivacao[i] = timeMin3;
+            break;
+        
+        default:
+            horaAtivacao[i] = timeHourNotConf;
+            minAtivacao[i] = timeHourNotConf;
+            break;
+        }
+    }
 
     //Cria fila de caracteres
     sensor_LDR_queue_handle = xQueueCreate( queueSize, sizeof( char[messageSize] ) );
@@ -914,13 +938,12 @@ void vDecision( void * pvParameters ){
     umidAdeq = umidadeAdequadaPadrão;
 
     //Carrega os valores padrões de tempo 
+    qtdAtivacao = quantidadeAtivaçõesPadrão;
     tempoAtivacaoProvisoria = t1m;
     tempoAtivaçãoTotal = t30m;
-    tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/3;
-
-    int contaAtivacaoRestante = 3;  //Conta quantas ativações restantes da bomba no dia
-
-    int tempoAtivacaoQuePassou = 0;
+    tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/qtdAtivacao;
+    contaAtivacaoRestante = qtdAtivacao; 
+    tempoAtivacaoQuePassou = 0;
 
     //Variáveis referentes aos sensores
     float umidade = 0.0f;  //Variável para salvar o valor de umidade localmente
@@ -929,16 +952,18 @@ void vDecision( void * pvParameters ){
     bool comTimer = 0;  //Variável que controla quando a bomba foi ativada com ou sem timer
     water_pump_state bombaDagua = BOMBA_DESLIGADA;  //Controla o estado da bomba
     
-    bool condicaoAtivacao1 = 0;
-    bool condicaoAtivacao2 = 0;
-    bool condicaoAtivacao3 = 0;
+    bool condicaoAtivacao[quantidadeAtivaçõesMaxima] = {0}; //Verifica se chegou na condição de ativação
+    bool ativou = 0; //Indica para o sistema que ele chegou a uma das condições de ativação
 
     struct tm ultimaAtivacao;   //Registra a última vez que a bomba ativou
     char timeStringUltimaAtivacao[64];  //Converte ultimaAtivacao em string
 
     int timeDiff = 0;    //Salva a diferença de horas em minutos
 
-    bool timestampMarker[3] = { 0 }; //Marca quais tempos do dia ele já passaram
+    //Marca quais tempos do dia ele já passaram
+    for(int i = 0; i < qtdAtivacao; i++){
+        timestampMarker[i] = 0;
+    }
 
     // Variáveis para salvar os valores do RTC
     time_t tempoAgora;
@@ -989,56 +1014,43 @@ void vDecision( void * pvParameters ){
                 }    
                 
                 //Verifica condição de ativação por tempo
-                condicaoAtivacao1 = timestampMarker[0] == 0 && timeinfo.tm_hour == horaAtivacao1[0] && timeinfo.tm_min == horaAtivacao1[1];
-                condicaoAtivacao2 = timestampMarker[1] == 0 && timeinfo.tm_hour == horaAtivacao1[0] && timeinfo.tm_min == horaAtivacao1[1];
-                condicaoAtivacao3 = timestampMarker[2] == 0 && timeinfo.tm_hour == horaAtivacao1[0] && timeinfo.tm_min == horaAtivacao1[1];
+                for(int i = 0; i< qtdAtivacao; i++){
+                    condicaoAtivacao[i] = timestampMarker[i] == 0 && timeinfo.tm_hour == horaAtivacao[i] && timeinfo.tm_min == minAtivacao[i];
+                    if(condicaoAtivacao[i]){
+                        ativou = true;
+                    }
+                }
 
-                //Verifica se é para ativar a bomba de ativação da bomba
-                if(condicaoAtivacao1 || condicaoAtivacao2 || condicaoAtivacao3){
-                    
-                    //Marca que passou do timestamp
-                    if(condicaoAtivacao1){
-                        timestampMarker[0] = 1;
-
-                        //Reduz o número de ativações restantes
-                        --contaAtivacaoRestante;
+                //Pega o semaforo de variaveis de controle
+                if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
+                 
+                    //Verifica se é para ativar a bomba de ativação da bomba
+                    if(ativou){
                         
-                        //Ao passar pelo timestamp, reseta o próximo timestamp
-                        timestampMarker[1] = 0;
-                    }
+                        //Marca qual o timestamp que passou e subtrai de ativações restantes
+                        for(int i = 0; i < qtdAtivacao; i++){
+                            if(condicaoAtivacao[i]){
+                                timestampMarker[i];
+                                --contaAtivacaoRestante;
+                            }
+                        }
 
-                    if(condicaoAtivacao2){
-                        timestampMarker[1] = 1;
+                        //Altera a variável para ligado
+                        bombaDagua = BOMBA_LIGADA;
+
+                        //Salva o tempo da última ativação
+                        ultimaAtivacao = timeinfo;
                         
-                        //Reduz o número de ativações restantes
-                        --contaAtivacaoRestante;
-
-                        //Ao passar pelo timestamp, reseta o próximo timestamp
-                        timestampMarker[2] = 0;
-                    }
-                    
-                    if(condicaoAtivacao3){
-                        timestampMarker[2] = 1;
-
-                        //Reduz o número de ativações restantes
-                        --contaAtivacaoRestante;
-
-                        //Ao passar pelo timestamp, reseta o próximo timestamp
-                        timestampMarker[0] = 0;
+                        //Com timer
+                        comTimer = 1;
+                        
+                        //Atualiza o duty cycle e ativa a bomba
+                        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_ON));
+                        ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
                     }
 
-                    //Altera a variável para ligado
-                    bombaDagua = BOMBA_LIGADA;
-
-                    //Salva o tempo da última ativação
-                    ultimaAtivacao = timeinfo;
-                    
-                    //Com timer
-                    comTimer = 1;
-
-                    //Atualiza o duty cycle e ativa a bomba
-                    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_ON));
-                    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+                    //Devolve o semaforo de valores de controle
+                    xSemaphoreGive(dallyControlValuesSemaphore);
                 }
 
                 break;
@@ -1049,49 +1061,62 @@ void vDecision( void * pvParameters ){
                     //Calcula a diferença de tempo
                     timeDiff = tmDifferenceInMinutes(timeinfo, ultimaAtivacao);
 
-                    //Se tiver passado do tempo máximo
-                    if(timeDiff > tempoAtivacaoProvisoria){
+                    //Pega o semaforo de variaveis de controle
+                    if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
+                        //Se tiver passado do tempo máximo
+                        if(timeDiff > tempoAtivacaoProvisoria){
 
-                        //Altera a variável para desligado
-                        bombaDagua = BOMBA_DESLIGADA;
+                            //Altera a variável para desligado
+                            bombaDagua = BOMBA_DESLIGADA;
 
-                        //Atualiza info de quando ativou pela última vez
-                        ultimaAtivacao = timeinfo;
+                            //Atualiza info de quando ativou pela última vez
+                            ultimaAtivacao = timeinfo;
 
-                        //Soma o tempo que passou ativado
-                        tempoAtivacaoQuePassou += timeDiff;
+                            //Soma o tempo que passou ativado
+                            tempoAtivacaoQuePassou += timeDiff;
 
-                        //Recalcula o tempo para ativar baseado no que já passou
-                        if(contaAtivacaoRestante > 0){
-                            tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
+                            //Recalcula o tempo para ativar baseado no que já passou
+                            if(contaAtivacaoRestante > 0){
+                                tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
+                            }
+
+                            //Atualiza o duty cycle e desliga a bomba
+                            ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_OFF));
+                            ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
                         }
 
-                        //Atualiza o duty cycle e desliga a bomba
-                        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_OFF));
-                        ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+                        //Devolve o semaforo de valores de controle
+                        xSemaphoreGive(dallyControlValuesSemaphore);
                     }
                 }else{
                     //Calcula a diferença de tempo
                     timeDiff = tmDifferenceInMinutes(timeinfo, ultimaAtivacao);
 
-                    if(timeDiff > tempoAtivaçãoPorPeriodo){
-                        //Altera a variável para desligado
-                        bombaDagua = BOMBA_DESLIGADA;
+                    //Pega o semaforo de variaveis de controle
+                    if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
 
-                        //Atualiza info de quando ativou pela última vez
-                        ultimaAtivacao = timeinfo;
+                        //Compara a diferença de tempo com o tempo de ativação por período
+                        if(timeDiff > tempoAtivaçãoPorPeriodo){
+                            //Altera a variável para desligado
+                            bombaDagua = BOMBA_DESLIGADA;
 
-                        //Soma o tempo que passou ativado
-                        tempoAtivacaoQuePassou += timeDiff;
+                            //Atualiza info de quando ativou pela última vez
+                            ultimaAtivacao = timeinfo;
 
-                        //Recalcula o tempo para ativar baseado no que já passou
-                        if(contaAtivacaoRestante > 0){
-                            tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
+                            //Soma o tempo que passou ativado
+                            tempoAtivacaoQuePassou += timeDiff;
+
+                            //Recalcula o tempo para ativar baseado no que já passou
+                            if(contaAtivacaoRestante > 0){
+                                tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
+                            }
+
+                            //Atualiza o duty cycle e desliga a bomba
+                            ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_OFF));
+                            ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
                         }
-
-                        //Atualiza o duty cycle e desliga a bomba
-                        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_OFF));
-                        ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+                        //Devolve o semaforo de valores de controle
+                        xSemaphoreGive(dallyControlValuesSemaphore);
                     }
                 }
                 
@@ -1156,10 +1181,13 @@ void vDallyReset( void * pvParameters ){
                 nextDay = timeinfo.tm_wday + 1;
             }
 
-            //Carrega os valores padrões de tempo 
-            tempoAtivacaoProvisoria = t1m;
-            tempoAtivaçãoTotal = t30m;
-            tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/3;
+            //Carrega os valores padrões de controle do sistema
+            contaAtivacaoRestante = qtdAtivacao;
+            tempoAtivacaoQuePassou = 0;
+            tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/contaAtivacaoRestante;
+            for(int i = 0; i < qtdAtivacao; i++){
+                timestampMarker[i] == 0;
+            }
 
             xSemaphoreGive(dallyControlValuesSemaphore);
         }
