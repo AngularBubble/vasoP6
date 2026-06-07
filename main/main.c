@@ -211,6 +211,7 @@ esp_mqtt_client_handle_t client; //Gerenciador do cliente MQTT
 static float ldr_lux[4];  //LDR - Vetor do valor de lux
 static float thr_tem[4];  //THERMISTOR - Vetor do valor de temperatura
 static float shr_pct; //SOIL HYGROMETER - Valor da humidade
+static float uts_dis; //ULTRASOOUND - Valor de distancia
 
 static float tempAdeq;  //Variável que salva a temperatura adequada configurada
 static float umidAdeq;  //Variável que salva a umidade adequada configurada
@@ -1314,7 +1315,8 @@ void vSensorValues( void * pvParameters ){
 
     char message_LDR[messageSize];   //Mensagem para os sensores LDRs
     char message_THR[messageSize];   //Mensagem para os sensores THERMISTORs
-    char message_SHR[messageSize];   //Mensagem para o sensore SOIL HYGROMETER
+    char message_SHR[messageSize];   //Mensagem para o sensor SOIL HYGROMETER
+    char message_UTS[messageSize];   //Mensagem para o sensor ULTRASOUND
 
     uint32_t tof_ticks; //Variável necessária para receber a notificação do sensor ultrassom
 
@@ -1404,41 +1406,43 @@ void vSensorValues( void * pvParameters ){
 
             //Convertendo os valores de resistencia para Humidade
             shr_pct = (shr_res-minResistenceSHR)/(maxResistenceSHR - minResistenceSHR);
-//_______________________________________MELHORAR_AQUI_______________________________________
+
+            //Gerando trigger para o sensor ultrassom
+            ESP_LOGI(ADC,"Ativando trigger para sensor de distancia");
             gen_trig_output();
 
+            //Aguardando resposta do sensor de distancia
             if (xTaskNotifyWait(0x00, ULONG_MAX, &tof_ticks, pdMS_TO_TICKS(1000)) == pdTRUE) {
                 float pulse_width_us = tof_ticks * (1000000.0 / esp_clk_apb_freq());
                 if (pulse_width_us > 35000) {
                     // out of range
                     continue;
                 }
-                // convert the pulse width into measure distance
-                float distance = (float) pulse_width_us / 58;
-                ESP_LOGI(MCPWM, "Measured distance: %.2fcm", distance);
+                //Converde tamanho do pulso em distancia medida em cm
+                uts_dis = (float) pulse_width_us / 58;
+
+                //Pegando o tempo atual
+                time(&tempoAgora);
+                setenv("TZ", "UTC+3", 1);
+                tzset();
+                localtime_r(&tempoAgora, &timeinfo);
+                strftime(timeString, sizeof(timeString), "%c", &timeinfo);
+
+                //Criando mensagem para as filas
+                ESP_LOGI(SNTP, "Creating sensor values queue messages and adding to queue");
+                sprintf(message_LDR,"{\"DataHora\": \"%s\", \"LDR_N(Lux)\": %f, \"LDR_O(Lux)\": %f, \"LDR_L(Lux)\": %f, \"LDR_S(Lux)\": %f}", timeString , ldr_lux[0], ldr_lux[1], ldr_lux[2], ldr_lux[3]);
+                sprintf(message_THR,"{\"DataHora\": \"%s\", \"Thermistor_N(°C)\": %f, \"THERMISTOR_O(°C)\": %f, \"THERMISTOR_L(°C)\": %f, \"THERMISTOR_S(°C)\": %f}", timeString , thr_tem[0], thr_tem[1], thr_tem[2], thr_tem[3]);
+                sprintf(message_SHR,"{\"DataHora\": \"%s\", \"Soil Hygrometer(percentage)\": %f}", timeString , shr_pct);
+                sprintf(message_UTS,"{\"DataHora\": \"%s\", \"Ultrasound(cm)\": %f}", timeString , uts_dis);
+
+                //Adicionando mensagens nas suas respectivas filas
+                ESP_ERROR_CHECK(xQueueSend(sensor_LDR_queue_handle, message_LDR, t500ms));
+                ESP_ERROR_CHECK(xQueueSend(sensor_THR_queue_handle, message_THR, t500ms));
+                ESP_ERROR_CHECK(xQueueSend(sensor_SHR_queue_handle, message_SHR, t500ms));
             }
             //Devolve o semaforo
             xSemaphoreGive(sensorValuesSemaphore);
         }
-        
-
-        //Pegando o tempo atual
-        time(&tempoAgora);
-        setenv("TZ", "UTC+3", 1);
-        tzset();
-        localtime_r(&tempoAgora, &timeinfo);
-        strftime(timeString, sizeof(timeString), "%c", &timeinfo);
-
-        //Criando mensagem para as filas
-        ESP_LOGI(SNTP, "Creating sensor values queue messages and adding to queue");
-        sprintf(message_LDR,"{\"DataHora\": \"%s\", \"LDR_N(Lux)\": %f, \"LDR_O(Lux)\": %f, \"LDR_L(Lux)\": %f, \"LDR_S(Lux)\": %f}", timeString , ldr_lux[0], ldr_lux[1], ldr_lux[2], ldr_lux[3]);
-        sprintf(message_THR,"{\"DataHora\": \"%s\", \"Thermistor_N(°C)\": %f, \"THERMISTOR_O(°C)\": %f, \"THERMISTOR_L(°C)\": %f, \"THERMISTOR_S(°C)\": %f}", timeString , thr_tem[0], thr_tem[1], thr_tem[2], thr_tem[3]);
-        sprintf(message_SHR,"{\"DataHora\": \"%s\", \"Soil Hygrometer(percentage)\": %f}", timeString , shr_pct);
-
-        //Adicionando mensagens nas suas respectivas filas
-        ESP_ERROR_CHECK(xQueueSend(sensor_LDR_queue_handle, message_LDR, t500ms));
-        ESP_ERROR_CHECK(xQueueSend(sensor_THR_queue_handle, message_THR, t500ms));
-        ESP_ERROR_CHECK(xQueueSend(sensor_SHR_queue_handle, message_SHR, t500ms));
 
         vTaskDelay(t30s);
     }
