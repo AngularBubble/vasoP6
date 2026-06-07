@@ -998,7 +998,6 @@ void vDecision( void * pvParameters ){
 
                 //Verifica diferentes condições para ativar a bomba de água
                 if(temperaturaMedia > tempAdeq && umidade < umidAdeq){
-                    
                     //Altera a variável para ligado
                     bombaDagua = BOMBA_LIGADA;
                     
@@ -1044,6 +1043,9 @@ void vDecision( void * pvParameters ){
                         //Com timer
                         comTimer = 1;
                         
+                        //Reseta variável de ativação
+                        ativou = false;
+
                         //Atualiza o duty cycle e ativa a bomba
                         ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_ON));
                         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
@@ -1132,6 +1134,7 @@ void vDecision( void * pvParameters ){
         strftime(timeStringUltimaAtivacao, sizeof(timeStringUltimaAtivacao), "%c", &ultimaAtivacao);
 
         //Criando mensagem para as filas
+        ESP_LOGI(SNTP, "Creating queue Bomb status message and adding to queue");
         sprintf(message_WPM,"{\"DataHora\": \"%s\", \"Estado_Bomba\": %d, \"Ultima_Ativacao\": %s, \"Quanto_tempo_ficou_ligado(Min)\": %d}", timeString , bombaDagua, timeStringUltimaAtivacao, tempoAtivacaoQuePassou);
         
         //Enviando mensagem para a fila 
@@ -1175,6 +1178,7 @@ void vDallyReset( void * pvParameters ){
         if(nextDay == timeinfo.tm_wday && xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
 
             //Define qual dia será o próximo dia
+            ESP_LOGI(SNTP, "Updating next day condition");
             if(timeinfo.tm_wday == 6){
                 nextDay = 0;
             }else{
@@ -1182,6 +1186,7 @@ void vDallyReset( void * pvParameters ){
             }
 
             //Carrega os valores padrões de controle do sistema
+            ESP_LOGI(SNTP, "Reseting dally values");
             contaAtivacaoRestante = qtdAtivacao;
             tempoAtivacaoQuePassou = 0;
             tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/contaAtivacaoRestante;
@@ -1235,15 +1240,18 @@ void vSensorValues( void * pvParameters ){
 
         //_________________LEITURA_________________
         //Leitura dos sensores para os LDRs (utilizam o ADC1)
+        ESP_LOGI(ADC,"Reading oneshot ADC1 values");
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LDR_N, &ldr_raw[0]));
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LDR_O, &ldr_raw[1]));
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LDR_L, &ldr_raw[2]));
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LDR_S, &ldr_raw[3]));
 
         // Para o Wifi para conseguir ler os sensores (o ADC2 utiliza o mesmo circuito que oc Wifi)
+        ESP_LOGI(WIFI,"Stopping Wifi, before reading ADC2 values");
         ESP_ERROR_CHECK(esp_wifi_stop());
         
         //Leitura dos sensores para os THERMISTORs (utilizam o ADC2)
+        ESP_LOGI(ADC,"Reading oneshot ADC2 values");
         ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, THERMISTOR_N, &thr_raw[0]));
         ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, THERMISTOR_O, &thr_raw[1]));
         ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, THERMISTOR_L, &thr_raw[2]));
@@ -1253,10 +1261,12 @@ void vSensorValues( void * pvParameters ){
         ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, SOIL_HYGROMETER, &shr_raw));
 
         //Inicia o Wifi novamente (acabou a leitura dos sensores que utilizam o ADC2)
+        ESP_LOGI(WIFI,"Starting Wifi, to after ADC2 read");
         ESP_ERROR_CHECK(esp_wifi_start()); 
 
         //_________________CALIBRAÇÃO_________________
         //Pega o valor aproximado de tensão para os LDRs (usa ADC1)
+        ESP_LOGI(ADC,"Using calibration scheme to convert raw value into voltage");
         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, ldr_raw[0], &ldr_vol[0]));
         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, ldr_raw[1], &ldr_vol[1]));
         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, ldr_raw[2], &ldr_vol[2]));
@@ -1273,6 +1283,7 @@ void vSensorValues( void * pvParameters ){
 
         //_________________CONVERSÃO_________________
         //Convertendo os valores de tensão para resistência do LDR
+        ESP_LOGI(ADC,"Converting voltage values into resistence values");
         ldr_res[0] = ldr_vol[0]*resistorCircuitoLDR/(tensaoAlimentacao - ldr_vol[0]);
         ldr_res[1] = ldr_vol[1]*resistorCircuitoLDR/(tensaoAlimentacao - ldr_vol[1]);
         ldr_res[2] = ldr_vol[2]*resistorCircuitoLDR/(tensaoAlimentacao - ldr_vol[2]);
@@ -1291,6 +1302,7 @@ void vSensorValues( void * pvParameters ){
         // Encapsula as variáveis pois elas podem ser utilizadas em outras funções
         if(xSemaphoreTake(sensorValuesSemaphore, t1s) == pdTRUE){
             //Convertendo os valores de resistencia para Lux
+            ESP_LOGI(ADC,"Converting resistence values into respective sensor units");
             ldr_lux[0] = lux*pow(resistenciaParaValorLux/ldr_res[0],1/ldrGamma);
             ldr_lux[1] = lux*pow(resistenciaParaValorLux/ldr_res[1],1/ldrGamma);
             ldr_lux[2] = lux*pow(resistenciaParaValorLux/ldr_res[2],1/ldrGamma);
@@ -1318,6 +1330,7 @@ void vSensorValues( void * pvParameters ){
         strftime(timeString, sizeof(timeString), "%c", &timeinfo);
 
         //Criando mensagem para as filas
+        ESP_LOGI(SNTP, "Creating sensor values queue messages and adding to queue");
         sprintf(message_LDR,"{\"DataHora\": \"%s\", \"LDR_N(Lux)\": %f, \"LDR_O(Lux)\": %f, \"LDR_L(Lux)\": %f, \"LDR_S(Lux)\": %f}", timeString , ldr_lux[0], ldr_lux[1], ldr_lux[2], ldr_lux[3]);
         sprintf(message_THR,"{\"DataHora\": \"%s\", \"Thermistor_N(°C)\": %f, \"THERMISTOR_O(°C)\": %f, \"THERMISTOR_L(°C)\": %f, \"THERMISTOR_S(°C)\": %f}", timeString , thr_tem[0], thr_tem[1], thr_tem[2], thr_tem[3]);
         sprintf(message_SHR,"{\"DataHora\": \"%s\", \"Soil Hygrometer(percentage)\": %f}", timeString , shr_pct);
@@ -1345,7 +1358,7 @@ void vProcessosMqtt( void * pvParameters ){
             //Devolve semaforo após verificação
             xSemaphoreGive(mqttAvailable);
 
-            ESP_LOGI(MQTT5, "Sending Messages");
+            ESP_LOGI(MQTT5, "Receiving queue messages and sending");
             //Envia para o tópico do LDR
             if(xQueueReceive(sensor_LDR_queue_handle, messageBuffer, t1s)){
                 esp_mqtt_client_publish(client, topicoLDR, messageBuffer, 0, 2, 1);
