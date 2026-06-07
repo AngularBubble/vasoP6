@@ -1404,7 +1404,7 @@ void vSensorValues( void * pvParameters ){
 
             //Convertendo os valores de resistencia para Humidade
             shr_pct = (shr_res-minResistenceSHR)/(maxResistenceSHR - minResistenceSHR);
-
+//_______________________________________MELHORAR_AQUI_______________________________________
             gen_trig_output();
 
             if (xTaskNotifyWait(0x00, ULONG_MAX, &tof_ticks, pdMS_TO_TICKS(1000)) == pdTRUE) {
