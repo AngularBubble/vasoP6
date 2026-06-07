@@ -25,6 +25,9 @@
 #include "esp_adc/adc_cali.h"   //Biblioteca para a interface de calibração do ADC
 #include "esp_adc/adc_cali_scheme.h"    //Biblioteca que toma conta da curva de calibração do ADC
 #include "driver/ledc.h"    //Biblioteca que é responsável pelas funções do LEDC
+#include "esp_private/esp_clk.h"    //Biblioteca privada para controle do clock interno
+#include "driver/mcpwm_cap.h"   //Biblioteca para o MCPWM
+#include "driver/gpio.h"    //Biblioteca de drivers para configurar os GPIO
 
 #include "lwip/err.h"       //Biblioteca para gerenciamento de erros de rede
 #include "lwip/sys.h"       //Biblioteca para uso de sistemas de rede com RTOS
@@ -100,6 +103,10 @@
 #define LEDC_DUTY_ON 4096 // Define o duty para ligado para 50%. (2 ** 13) * 50% = 4096]
 #define LEDC_DUTY_OFF 0 // Define o duty para desligado para 0%
 
+//______________________DEFINIÇÃO_PARA_CONFIGURAÇÃO_DOS_PINOS_DE_MCPWM_______________________
+
+#define AJ_SR04M_TRIG_GPIO  0
+#define AJ_SR04M_ECHO_GPIO  2
 
 //___________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DAS_FILAS__________________________
 
@@ -175,7 +182,8 @@
 //_____________________________________VARIÁVEIS_GLOBAIS_____________________________________
 
 static const char *MQTT5 = "MQTT5";     //Tag para os Logs referentes ao MQTT
-static const char *WIFI = "Wifi";    //Tag para os Logs referentes ao Wifi   
+static const char *MCPWM = "MCPWM";  //Tag para os Logs referentes a MCPWM
+static const char *WIFI = "WIFI";    //Tag para os Logs referentes ao Wifi  
 static const char *SNTP = "SNTP";  //Tag para os Logs referentes a SNTP
 static const char *ADC = "ADC";  //Tag para os Logs referentes a ADC
 
@@ -349,7 +357,38 @@ static void print_user_property(mqtt5_user_property_handle_t user_property){
         }
     }
 }
+//_______FUNÇÃO_AUXILIAR_QUE_DA_TRIGGER_NO_SENSOR_______
+static void gen_trig_output(void)
+{
+    gpio_set_level(AJ_SR04M_TRIG_GPIO, 1); // set high
+    esp_rom_delay_us(10);
+    gpio_set_level(AJ_SR04M_TRIG_GPIO, 0); // set low
+}
 
+//_______FUNÇÃO_DE_CALLBACK_PARA_O_MCPWM_______
+static bool aj_sr04m_echo_callback(mcpwm_cap_channel_handle_t cap_chan, const mcpwm_capture_event_data_t *edata, void *user_data)
+{
+    static uint32_t cap_val_begin_of_sample = 0;
+    static uint32_t cap_val_end_of_sample = 0;
+    TaskHandle_t task_to_notify = (TaskHandle_t)user_data;
+    BaseType_t high_task_wakeup = pdFALSE;
+
+    //calculate the interval in the ISR,
+    //so that the interval will be always correct even when capture_queue is not handled in time and overflow.
+    if (edata->cap_edge == MCPWM_CAP_EDGE_POS) {
+        // store the timestamp when pos edge is detected
+        cap_val_begin_of_sample = edata->cap_value;
+        cap_val_end_of_sample = cap_val_begin_of_sample;
+    } else {
+        cap_val_end_of_sample = edata->cap_value;
+        uint32_t tof_ticks = cap_val_end_of_sample - cap_val_begin_of_sample;
+
+        // notify the task to calculate the distance
+        xTaskNotifyFromISR(task_to_notify, tof_ticks, eSetValueWithOverwrite, &high_task_wakeup);
+    }
+
+    return high_task_wakeup == pdTRUE;
+}
 
 
 //_______GERENCIADOR_DE_EVENTOS_MQTT_______
@@ -812,6 +851,53 @@ void ledc_init_sta(void){
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
 
+
+void mcpwm_init_sta(void){
+    ESP_LOGI(MCPWM, "Install capture timer");
+    mcpwm_cap_timer_handle_t cap_timer = NULL;
+    mcpwm_capture_timer_config_t cap_conf = {
+        .clk_src = MCPWM_CAPTURE_CLK_SRC_DEFAULT,
+        .group_id = 0,
+    };
+    ESP_ERROR_CHECK(mcpwm_new_capture_timer(&cap_conf, &cap_timer));
+
+    ESP_LOGI(MCPWM, "Install capture channel");
+    mcpwm_cap_channel_handle_t cap_chan = NULL;
+    mcpwm_capture_channel_config_t cap_ch_conf = {
+        .gpio_num = AJ_SR04M_ECHO_GPIO,
+        .prescale = 1,
+        // capture on both edge
+        .flags.neg_edge = true,
+        .flags.pos_edge = true,
+    };
+    ESP_ERROR_CHECK(mcpwm_new_capture_channel(cap_timer, &cap_ch_conf, &cap_chan));
+    // pull up the GPIO internally
+    ESP_ERROR_CHECK(gpio_set_pull_mode(AJ_SR04M_ECHO_GPIO, GPIO_PULLUP_ONLY));
+
+    ESP_LOGI(MCPWM, "Register capture callback");
+    TaskHandle_t cur_task = xTaskGetCurrentTaskHandle();
+    mcpwm_capture_event_callbacks_t cbs = {
+        .on_cap = aj_sr04m_echo_callback,
+    };
+    ESP_ERROR_CHECK(mcpwm_capture_channel_register_event_callbacks(cap_chan, &cbs, cur_task));
+
+    ESP_LOGI(MCPWM, "Enable capture channel");
+    ESP_ERROR_CHECK(mcpwm_capture_channel_enable(cap_chan));
+
+    ESP_LOGI(MCPWM, "Configure Trig pin");
+    gpio_config_t io_conf = {
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = 1ULL << AJ_SR04M_TRIG_GPIO,
+    };
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+    // drive low by default
+    ESP_ERROR_CHECK(gpio_set_level(AJ_SR04M_TRIG_GPIO, 0));
+
+    ESP_LOGI(MCPWM, "Enable and start capture timer");
+    ESP_ERROR_CHECK(mcpwm_capture_timer_enable(cap_timer));
+    ESP_ERROR_CHECK(mcpwm_capture_timer_start(cap_timer));
+
+}
 //_______________________________DECLARAÇÃO_DE_TAREFAS_DO_RTOS_______________________________
 void vDecision( void * pvParameters );
 void vDallyReset( void * pvParameters );
@@ -1029,7 +1115,7 @@ void vDecision( void * pvParameters ){
                         //Marca qual o timestamp que passou e subtrai de ativações restantes
                         for(int i = 0; i < qtdAtivacao; i++){
                             if(condicaoAtivacao[i]){
-                                timestampMarker[i];
+                                timestampMarker[i] = 1;
                                 --contaAtivacaoRestante;
                             }
                         }
@@ -1191,7 +1277,7 @@ void vDallyReset( void * pvParameters ){
             tempoAtivacaoQuePassou = 0;
             tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/contaAtivacaoRestante;
             for(int i = 0; i < qtdAtivacao; i++){
-                timestampMarker[i] == 0;
+                timestampMarker[i] = 0;
             }
 
             xSemaphoreGive(dallyControlValuesSemaphore);
@@ -1229,6 +1315,8 @@ void vSensorValues( void * pvParameters ){
     char message_LDR[messageSize];   //Mensagem para os sensores LDRs
     char message_THR[messageSize];   //Mensagem para os sensores THERMISTORs
     char message_SHR[messageSize];   //Mensagem para o sensore SOIL HYGROMETER
+
+    uint32_t tof_ticks; //Variável necessária para receber a notificação do sensor ultrassom
 
     while(1){
         
@@ -1317,6 +1405,18 @@ void vSensorValues( void * pvParameters ){
             //Convertendo os valores de resistencia para Humidade
             shr_pct = (shr_res-minResistenceSHR)/(maxResistenceSHR - minResistenceSHR);
 
+            gen_trig_output();
+
+            if (xTaskNotifyWait(0x00, ULONG_MAX, &tof_ticks, pdMS_TO_TICKS(1000)) == pdTRUE) {
+                float pulse_width_us = tof_ticks * (1000000.0 / esp_clk_apb_freq());
+                if (pulse_width_us > 35000) {
+                    // out of range
+                    continue;
+                }
+                // convert the pulse width into measure distance
+                float distance = (float) pulse_width_us / 58;
+                ESP_LOGI(MCPWM, "Measured distance: %.2fcm", distance);
+            }
             //Devolve o semaforo
             xSemaphoreGive(sensorValuesSemaphore);
         }
