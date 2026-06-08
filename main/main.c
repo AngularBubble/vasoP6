@@ -28,6 +28,7 @@
 #include "esp_private/esp_clk.h"    //Biblioteca privada para controle do clock interno
 #include "driver/mcpwm_cap.h"   //Biblioteca para o MCPWM
 #include "driver/gpio.h"    //Biblioteca de drivers para configurar os GPIO
+#include "esp_littlefs.h"   //Biblioteca para uso do sistema de arquivos littlefs
 
 #include "lwip/err.h"       //Biblioteca para gerenciamento de erros de rede
 #include "lwip/sys.h"       //Biblioteca para uso de sistemas de rede com RTOS
@@ -35,9 +36,9 @@
 
 //_____________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_WIFI_____________________________
 
-#define EXAMPLE_ESP_WIFI_SSID      CONFIG_ESP_WIFI_SSID
-#define EXAMPLE_ESP_WIFI_PASS      CONFIG_ESP_WIFI_PASSWORD
-#define EXAMPLE_ESP_MAXIMUM_RETRY  CONFIG_ESP_MAXIMUM_RETRY
+#define EXAMPLE_ESP_WIFI_SSID      "GABRIEL"
+#define EXAMPLE_ESP_WIFI_PASS      "Master1357@"
+#define EXAMPLE_ESP_MAXIMUM_RETRY  100
 
 #if CONFIG_ESP_STATION_EXAMPLE_WPA3_SAE_PWE_HUNT_AND_PECK
 #define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_HUNT_AND_PECK
@@ -180,12 +181,13 @@
 #define quantidadeAtivaçõesPadrão 3
 #define quantidadeAtivaçõesMaxima 10
 //_____________________________________VARIÁVEIS_GLOBAIS_____________________________________
-
+static const char *LittleFS = "LittleFS";  //Tag para os Logs referentes ao LittleFS
 static const char *MQTT5 = "MQTT5";     //Tag para os Logs referentes ao MQTT
 static const char *MCPWM = "MCPWM";  //Tag para os Logs referentes a MCPWM
 static const char *WIFI = "WIFI";    //Tag para os Logs referentes ao Wifi  
 static const char *SNTP = "SNTP";  //Tag para os Logs referentes a SNTP
 static const char *ADC = "ADC";  //Tag para os Logs referentes a ADC
+
 
 static EventGroupHandle_t s_wifi_event_group;   //Gerenciador de eventos de Wifi
 
@@ -852,7 +854,6 @@ void ledc_init_sta(void){
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
 
-
 void mcpwm_init_sta(void){
     ESP_LOGI(MCPWM, "Install capture timer");
     mcpwm_cap_timer_handle_t cap_timer = NULL;
@@ -897,6 +898,41 @@ void mcpwm_init_sta(void){
     ESP_LOGI(MCPWM, "Enable and start capture timer");
     ESP_ERROR_CHECK(mcpwm_capture_timer_enable(cap_timer));
     ESP_ERROR_CHECK(mcpwm_capture_timer_start(cap_timer));
+
+}
+
+void littlefs_init_sta(){
+    
+    ESP_LOGI(LittleFS, "Initializing LittleFS");
+
+    esp_vfs_littlefs_conf_t conf = {
+        .base_path = "/littlefs",
+        .partition_label = "storage",
+        .format_if_mount_failed = true,
+        .dont_mount = false,
+    };
+
+    esp_err_t ret = esp_vfs_littlefs_register(&conf);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(LittleFS, "Failed to mount or format filesystem");
+        } else if (ret == ESP_ERR_NOT_FOUND) {
+            ESP_LOGE(LittleFS, "Failed to find LittleFS partition");
+        } else {
+            ESP_LOGE(LittleFS, "Failed to initialize LittleFS (%s)", esp_err_to_name(ret));
+        }
+        return;
+    }
+
+    size_t total = 0, used = 0;
+    ret = esp_littlefs_info(conf.partition_label, &total, &used);
+    if (ret != ESP_OK) {
+        ESP_LOGE(LittleFS, "Failed to get LittleFS partition information (%s)", esp_err_to_name(ret));
+        esp_littlefs_format(conf.partition_label);
+    } else {
+        ESP_LOGI(LittleFS, "Partition size: total: %d, used: %d", total, used);
+    }
 
 }
 //_______________________________DECLARAÇÃO_DE_TAREFAS_DO_RTOS_______________________________
@@ -1000,6 +1036,12 @@ void app_main(void){
     //Chamando a função que inicia o LEDC
     ledc_init_sta();
 
+    //Chamando a função que inicia o MCPWM
+    mcpwm_init_sta();
+
+    //Chamando a função que inicia o LittleFS
+    littlefs_init_sta();
+
     char strftime_buf[64];
     // Definindo timezone para o horário padrão de Brazília (UTC+3)
     setenv("TZ", "UTC+3", 1);
@@ -1009,9 +1051,9 @@ void app_main(void){
     ESP_LOGI(SNTP, "The current date/time in Brasilia is: %s", strftime_buf);
 
     // Criação das tarefas
-    xTaskCreatePinnedToCore(&vDecision, "decision", 2048, ( void * ) 1, 5, NULL, 0);
-    xTaskCreatePinnedToCore(&vSensorValues, "sensorValues", 2048, ( void * ) 1, 5, NULL, 0);
-    xTaskCreatePinnedToCore(&vProcessosMqtt, "processosMqtt", 2048, ( void * ) 1, 5, NULL, 1);
+    //xTaskCreatePinnedToCore(&vDecision, "decision", 2048, ( void * ) 1, 5, NULL, 0);
+    //xTaskCreatePinnedToCore(&vSensorValues, "sensorValues", 2048, ( void * ) 1, 5, NULL, 0);
+    //xTaskCreatePinnedToCore(&vProcessosMqtt, "processosMqtt", 2048, ( void * ) 1, 5, NULL, 1);
 
 }
 
