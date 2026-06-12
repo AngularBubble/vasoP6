@@ -106,7 +106,7 @@
 
 //______________________DEFINIÇÃO_PARA_CONFIGURAÇÃO_DOS_PINOS_DE_MCPWM_______________________
 
-#define AJ_SR04M_TRIG_GPIO  0
+#define AJ_SR04M_TRIG_GPIO  15
 #define AJ_SR04M_ECHO_GPIO  2
 
 //___________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DAS_FILAS__________________________
