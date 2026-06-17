@@ -21,6 +21,7 @@
 #include "mqtt_client.h"       //Biblioteca para cliente MQTT
 #include "esp_netif_sntp.h"     //Biblioteca que faz integração entre a biblioteca de SNTP e de Netif
 #include "esp_sntp.h"       //Biblioteca que habilita o Simple Network Time Protocol(SNTP)
+#include "soc/adc_channel.h"    //Biblioteca geral para os canais adc
 #include "esp_adc/adc_oneshot.h"    //Biblioteca para a funcionalidade de leitura única (oneshot) do Analog to Digital Converter(ADC)
 #include "esp_adc/adc_cali.h"   //Biblioteca para a interface de calibração do ADC
 #include "esp_adc/adc_cali_scheme.h"    //Biblioteca que toma conta da curva de calibração do ADC
@@ -71,6 +72,9 @@
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
+//_________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DE_STACK_SIZE________________________
+#define STACK_SIZE_SENSOR_VALUES 4096
+
 //________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DE_IP_PARA_SNTP_______________________
 
 #ifndef INET6_ADDRSTRLEN
@@ -80,19 +84,19 @@
 //_______________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DE_PINOS_PARA_ADC______________________
 
 //Canais para os LDRs
-#define LDR_N ADC_CHANNEL_6 //GPIO_34
-#define LDR_O ADC_CHANNEL_7 //GPIO_35
-#define LDR_L ADC_CHANNEL_4 //GPIO_32
-#define LDR_S ADC_CHANNEL_5 //GPIO_33
+#define LDR_N ADC1_GPIO34_CHANNEL //GPIO_34
+#define LDR_O ADC1_GPIO35_CHANNEL //GPIO_35
+#define LDR_L ADC1_GPIO32_CHANNEL //GPIO_32
+#define LDR_S ADC1_GPIO33_CHANNEL //GPIO_33
 
 //Canais para os Thermistores
-#define THERMISTOR_N ADC_CHANNEL_8  //GPIO_25
-#define THERMISTOR_O ADC_CHANNEL_9  //GPIO_26
-#define THERMISTOR_L ADC_CHANNEL_7  //GPIO_27
-#define THERMISTOR_S ADC_CHANNEL_6  //GPIO_14
+#define THERMISTOR_N ADC2_GPIO25_CHANNEL  //GPIO_25
+#define THERMISTOR_O ADC2_GPIO26_CHANNEL  //GPIO_26
+#define THERMISTOR_L ADC2_GPIO27_CHANNEL  //GPIO_27
+#define THERMISTOR_S ADC2_GPIO14_CHANNEL  //GPIO_14
 
 //Canal para o Higrometro
-#define SOIL_HYGROMETER ADC_CHANNEL_5 //GPIO_12
+#define SOIL_HYGROMETER ADC2_GPIO13_CHANNEL //GPIO_13
 
 //____________________________DEFINIÇÃO_PARA_CONFIGURAÇÕES_DO_LEDC___________________________
 
@@ -180,7 +184,10 @@
 #define umidadeAdequadaPadrão 70
 #define quantidadeAtivaçõesPadrão 3
 #define quantidadeAtivaçõesMaxima 10
+
 //_____________________________________VARIÁVEIS_GLOBAIS_____________________________________
+
+static const char *sensorValues = "sensorValues";  //Tag para os Logs referentes a tarefa sensorValues
 static const char *LittleFS = "LittleFS";  //Tag para os Logs referentes ao LittleFS
 static const char *MQTT5 = "MQTT5";     //Tag para os Logs referentes ao MQTT
 static const char *MCPWM = "MCPWM";  //Tag para os Logs referentes a MCPWM
@@ -188,6 +195,7 @@ static const char *WIFI = "WIFI";    //Tag para os Logs referentes ao Wifi
 static const char *SNTP = "SNTP";  //Tag para os Logs referentes a SNTP
 static const char *ADC = "ADC";  //Tag para os Logs referentes a ADC
 
+static TaskHandle_t xHandleSensorValues;
 
 static EventGroupHandle_t s_wifi_event_group;   //Gerenciador de eventos de Wifi
 
@@ -202,7 +210,8 @@ static adc_cali_handle_t adc2_cali_handle;  //Gerenciador de calibração do ADC
 QueueHandle_t sensor_LDR_queue_handle;  //Fila de mensagens do LDR
 QueueHandle_t sensor_THR_queue_handle;  //Fila de mensagens do THR
 QueueHandle_t sensor_SHR_queue_handle;  //Fila de mensagens do SHR
-QueueHandle_t funcionamento_WPM_queue_handle;  //Fila de mensagens do SHR
+QueueHandle_t sensor_UTS_queue_handle;  //Fila de mensagens do SHR
+QueueHandle_t funcionamento_WPM_queue_handle;  //Fila de mensagens da WaterPump Motor
 
 SemaphoreHandle_t sensorValuesSemaphore; //Semaforo para proteger o valor final dos sensores
 SemaphoreHandle_t dallyControlValuesSemaphore;  //Semaforo para projeter a manipulação das variáveis de controle diario
@@ -877,11 +886,10 @@ void mcpwm_init_sta(void){
     ESP_ERROR_CHECK(gpio_set_pull_mode(AJ_SR04M_ECHO_GPIO, GPIO_PULLUP_ONLY));
 
     ESP_LOGI(MCPWM, "Register capture callback");
-    TaskHandle_t cur_task = xTaskGetCurrentTaskHandle();
     mcpwm_capture_event_callbacks_t cbs = {
         .on_cap = aj_sr04m_echo_callback,
     };
-    ESP_ERROR_CHECK(mcpwm_capture_channel_register_event_callbacks(cap_chan, &cbs, cur_task));
+    ESP_ERROR_CHECK(mcpwm_capture_channel_register_event_callbacks(cap_chan, &cbs, xHandleSensorValues));
 
     ESP_LOGI(MCPWM, "Enable capture channel");
     ESP_ERROR_CHECK(mcpwm_capture_channel_enable(cap_chan));
@@ -986,6 +994,7 @@ void app_main(void){
     sensor_LDR_queue_handle = xQueueCreate( queueSize, sizeof( char[messageSize] ) );
     sensor_THR_queue_handle = xQueueCreate( queueSize, sizeof( char[messageSize] ) );
     sensor_SHR_queue_handle = xQueueCreate( queueSize, sizeof( char[messageSize] ) );
+    sensor_UTS_queue_handle = xQueueCreate( queueSize, sizeof( char[messageSize] ) );
 
     //Cria semaforos para proteção de dados
     sensorValuesSemaphore = xSemaphoreCreateMutex();
@@ -1036,11 +1045,11 @@ void app_main(void){
     //Chamando a função que inicia o LEDC
     ledc_init_sta();
 
-    //Chamando a função que inicia o MCPWM
-    mcpwm_init_sta();
-
     //Chamando a função que inicia o LittleFS
     littlefs_init_sta();
+
+    //Inicializando Handlers de tarefas como nulo
+    xHandleSensorValues = NULL;
 
     char strftime_buf[64];
     // Definindo timezone para o horário padrão de Brazília (UTC+3)
@@ -1052,7 +1061,7 @@ void app_main(void){
 
     // Criação das tarefas
     //xTaskCreatePinnedToCore(&vDecision, "decision", 2048, ( void * ) 1, 5, NULL, 0);
-    //xTaskCreatePinnedToCore(&vSensorValues, "sensorValues", 2048, ( void * ) 1, 5, NULL, 0);
+    xTaskCreatePinnedToCore(&vSensorValues, "sensorValues", STACK_SIZE_SENSOR_VALUES, ( void * ) 1, 5, &xHandleSensorValues, 0);
     //xTaskCreatePinnedToCore(&vProcessosMqtt, "processosMqtt", 2048, ( void * ) 1, 5, NULL, 1);
 
 }
@@ -1333,6 +1342,7 @@ void vDallyReset( void * pvParameters ){
 //_______TAREFA_QUE_FAZ_A_LEITURA_DOS_SENSORES_______
 void vSensorValues( void * pvParameters ){
     
+    ESP_LOGI(sensorValues,"Entrando na tarefa de leitura dos Sensores");
     //Variáveis para tentar atualizar o relógio
     int retry = 0;
     const int retry_count = 15;
@@ -1362,28 +1372,31 @@ void vSensorValues( void * pvParameters ){
 
     uint32_t tof_ticks; //Variável necessária para receber a notificação do sensor ultrassom
 
+    //Chamando a função que inicia o MCPWM
+    mcpwm_init_sta();
+
     while(1){
         
         // Tenta atualizar o relógio interno
         retry = 0;
         while (esp_netif_sntp_sync_wait(t500ms) == ESP_ERR_TIMEOUT && ++retry < retry_count) {
-            ESP_LOGI(SNTP,"Waiting for system time to be set... (%d/%d)\n", retry, retry_count);
+            ESP_LOGI(sensorValues,"Waiting for system time to be set... (%d/%d)\n", retry, retry_count);
         }
 
         //_________________LEITURA_________________
         //Leitura dos sensores para os LDRs (utilizam o ADC1)
-        ESP_LOGI(ADC,"Reading oneshot ADC1 values");
+        ESP_LOGI(sensorValues,"Reading oneshot ADC1 values");
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LDR_N, &ldr_raw[0]));
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LDR_O, &ldr_raw[1]));
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LDR_L, &ldr_raw[2]));
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LDR_S, &ldr_raw[3]));
 
         // Para o Wifi para conseguir ler os sensores (o ADC2 utiliza o mesmo circuito que oc Wifi)
-        ESP_LOGI(WIFI,"Stopping Wifi, before reading ADC2 values");
+        ESP_LOGI(sensorValues,"Stopping Wifi, before reading ADC2 values");
         ESP_ERROR_CHECK(esp_wifi_stop());
         
         //Leitura dos sensores para os THERMISTORs (utilizam o ADC2)
-        ESP_LOGI(ADC,"Reading oneshot ADC2 values");
+        ESP_LOGI(sensorValues,"Reading oneshot ADC2 values");
         ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, THERMISTOR_N, &thr_raw[0]));
         ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, THERMISTOR_O, &thr_raw[1]));
         ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, THERMISTOR_L, &thr_raw[2]));
@@ -1393,12 +1406,12 @@ void vSensorValues( void * pvParameters ){
         ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, SOIL_HYGROMETER, &shr_raw));
 
         //Inicia o Wifi novamente (acabou a leitura dos sensores que utilizam o ADC2)
-        ESP_LOGI(WIFI,"Starting Wifi, to after ADC2 read");
+        ESP_LOGI(sensorValues,"Starting Wifi, to after ADC2 read");
         ESP_ERROR_CHECK(esp_wifi_start()); 
 
         //_________________CALIBRAÇÃO_________________
         //Pega o valor aproximado de tensão para os LDRs (usa ADC1)
-        ESP_LOGI(ADC,"Using calibration scheme to convert raw value into voltage");
+        ESP_LOGI(sensorValues,"Using calibration scheme to convert raw value into voltage");
         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, ldr_raw[0], &ldr_vol[0]));
         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, ldr_raw[1], &ldr_vol[1]));
         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, ldr_raw[2], &ldr_vol[2]));
@@ -1415,7 +1428,7 @@ void vSensorValues( void * pvParameters ){
 
         //_________________CONVERSÃO_________________
         //Convertendo os valores de tensão para resistência do LDR
-        ESP_LOGI(ADC,"Converting voltage values into resistence values");
+        ESP_LOGI(sensorValues,"Converting voltage values into resistence values");
         ldr_res[0] = ldr_vol[0]*resistorCircuitoLDR/(tensaoAlimentacao - ldr_vol[0]);
         ldr_res[1] = ldr_vol[1]*resistorCircuitoLDR/(tensaoAlimentacao - ldr_vol[1]);
         ldr_res[2] = ldr_vol[2]*resistorCircuitoLDR/(tensaoAlimentacao - ldr_vol[2]);
@@ -1434,7 +1447,7 @@ void vSensorValues( void * pvParameters ){
         // Encapsula as variáveis pois elas podem ser utilizadas em outras funções
         if(xSemaphoreTake(sensorValuesSemaphore, t1s) == pdTRUE){
             //Convertendo os valores de resistencia para Lux
-            ESP_LOGI(ADC,"Converting resistence values into respective sensor units");
+            ESP_LOGI(sensorValues,"Converting resistence values into respective sensor units");
             ldr_lux[0] = lux*pow(resistenciaParaValorLux/ldr_res[0],1/ldrGamma);
             ldr_lux[1] = lux*pow(resistenciaParaValorLux/ldr_res[1],1/ldrGamma);
             ldr_lux[2] = lux*pow(resistenciaParaValorLux/ldr_res[2],1/ldrGamma);
@@ -1450,7 +1463,7 @@ void vSensorValues( void * pvParameters ){
             shr_pct = (shr_res-minResistenceSHR)/(maxResistenceSHR - minResistenceSHR);
 
             //Gerando trigger para o sensor ultrassom
-            ESP_LOGI(ADC,"Ativando trigger para sensor de distancia");
+            ESP_LOGI(sensorValues,"Ativando trigger para sensor de distancia");
             gen_trig_output();
 
             //Aguardando resposta do sensor de distancia
@@ -1471,16 +1484,22 @@ void vSensorValues( void * pvParameters ){
                 strftime(timeString, sizeof(timeString), "%c", &timeinfo);
 
                 //Criando mensagem para as filas
-                ESP_LOGI(SNTP, "Creating sensor values queue messages and adding to queue");
+                ESP_LOGI(sensorValues, "Creating sensor values queue messages and adding to queue");
                 sprintf(message_LDR,"{\"DataHora\": \"%s\", \"LDR_N(Lux)\": %f, \"LDR_O(Lux)\": %f, \"LDR_L(Lux)\": %f, \"LDR_S(Lux)\": %f}", timeString , ldr_lux[0], ldr_lux[1], ldr_lux[2], ldr_lux[3]);
                 sprintf(message_THR,"{\"DataHora\": \"%s\", \"Thermistor_N(°C)\": %f, \"THERMISTOR_O(°C)\": %f, \"THERMISTOR_L(°C)\": %f, \"THERMISTOR_S(°C)\": %f}", timeString , thr_tem[0], thr_tem[1], thr_tem[2], thr_tem[3]);
                 sprintf(message_SHR,"{\"DataHora\": \"%s\", \"Soil Hygrometer(percentage)\": %f}", timeString , shr_pct);
                 sprintf(message_UTS,"{\"DataHora\": \"%s\", \"Ultrasound(cm)\": %f}", timeString , uts_dis);
 
+                ESP_LOGI(sensorValues,"%s",message_LDR);
+                ESP_LOGI(sensorValues,"%s",message_THR);
+                ESP_LOGI(sensorValues,"%s",message_SHR);
+                ESP_LOGI(sensorValues,"%s",message_UTS);
+
                 //Adicionando mensagens nas suas respectivas filas
-                ESP_ERROR_CHECK(xQueueSend(sensor_LDR_queue_handle, message_LDR, t500ms));
-                ESP_ERROR_CHECK(xQueueSend(sensor_THR_queue_handle, message_THR, t500ms));
-                ESP_ERROR_CHECK(xQueueSend(sensor_SHR_queue_handle, message_SHR, t500ms));
+                xQueueSend(sensor_LDR_queue_handle, message_LDR, t500ms);
+                xQueueSend(sensor_THR_queue_handle, message_THR, t500ms);
+                xQueueSend(sensor_SHR_queue_handle, message_SHR, t500ms);
+                xQueueSend(sensor_UTS_queue_handle, message_UTS, t500ms);
             }
             //Devolve o semaforo
             xSemaphoreGive(sensorValuesSemaphore);
