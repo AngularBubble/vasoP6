@@ -74,6 +74,10 @@
 
 //_________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DE_STACK_SIZE________________________
 #define STACK_SIZE_SENSOR_VALUES 4096
+#define STACK_SIZE_DECISION 4096
+#define STACK_SIZE_PROCESSOS_MQTT 4096
+#define STACK_SIZE_DALLY_RESET 4096
+
 
 //________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DE_IP_PARA_SNTP_______________________
 
@@ -84,14 +88,14 @@
 //_______________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DE_PINOS_PARA_ADC______________________
 
 //Canais para os LDRs
-#define LDR_N ADC1_GPIO34_CHANNEL //GPIO_34
-#define LDR_O ADC1_GPIO35_CHANNEL //GPIO_35
+#define LDR_N ADC1_GPIO35_CHANNEL //GPIO_35
+#define LDR_O ADC1_GPIO34_CHANNEL //GPIO_34
 #define LDR_L ADC1_GPIO32_CHANNEL //GPIO_32
 #define LDR_S ADC1_GPIO33_CHANNEL //GPIO_33
 
 //Canais para os Thermistores
-#define THERMISTOR_N ADC2_GPIO25_CHANNEL  //GPIO_25
-#define THERMISTOR_O ADC2_GPIO26_CHANNEL  //GPIO_26
+#define THERMISTOR_N ADC2_GPIO26_CHANNEL  //GPIO_26
+#define THERMISTOR_O ADC2_GPIO25_CHANNEL  //GPIO_25
 #define THERMISTOR_L ADC2_GPIO27_CHANNEL  //GPIO_27
 #define THERMISTOR_S ADC2_GPIO14_CHANNEL  //GPIO_14
 
@@ -126,6 +130,10 @@
 #define tensaoAlimentacao 3300.0  //3300mV
 #define resistorCircuitoLDR 2200.0  //2kOhm
 #define resistenciaParaValorLux 14000.0 //14kOhm
+#define resistenciaParaValorLuxN 29938.312 //29.9kOhm
+#define resistenciaParaValorLuxO 33257.146 //33.2kOhm
+#define resistenciaParaValorLuxL 23443.201 //23.4kOhm
+#define resistenciaParaValorLuxS 31618.039 //31.6kOhm
 #define lux 10  //10Lux
 
 //Valores para os calculos do Thermistor
@@ -184,10 +192,12 @@
 #define umidadeAdequadaPadrão 70
 #define quantidadeAtivaçõesPadrão 3
 #define quantidadeAtivaçõesMaxima 10
+#define alturaMinimaPadrão 27
 
 //_____________________________________VARIÁVEIS_GLOBAIS_____________________________________
 
 static const char *sensorValues = "sensorValues";  //Tag para os Logs referentes a tarefa sensorValues
+static const char *decision = "decision";  //Tag para os Logs referentes a tarefa sensorValues
 static const char *LittleFS = "LittleFS";  //Tag para os Logs referentes ao LittleFS
 static const char *MQTT5 = "MQTT5";     //Tag para os Logs referentes ao MQTT
 static const char *MCPWM = "MCPWM";  //Tag para os Logs referentes a MCPWM
@@ -196,6 +206,7 @@ static const char *SNTP = "SNTP";  //Tag para os Logs referentes a SNTP
 static const char *ADC = "ADC";  //Tag para os Logs referentes a ADC
 
 static TaskHandle_t xHandleSensorValues;
+static TaskHandle_t xHandleDecision;
 
 static EventGroupHandle_t s_wifi_event_group;   //Gerenciador de eventos de Wifi
 
@@ -226,6 +237,7 @@ static float uts_dis; //ULTRASOOUND - Valor de distancia
 
 static float tempAdeq;  //Variável que salva a temperatura adequada configurada
 static float umidAdeq;  //Variável que salva a umidade adequada configurada
+static float altuMin;   //Variável que salva a altura minima do reservatório
 
 static short int qtdAtivacao;
 static int tempoAtivacaoProvisoria; //Armazena o tempo minimo que a bomba precisa ser ativada em caso de urgencia
@@ -991,10 +1003,11 @@ void app_main(void){
     }
 
     //Cria fila de caracteres
-    sensor_LDR_queue_handle = xQueueCreate( queueSize, sizeof( char[messageSize] ) );
-    sensor_THR_queue_handle = xQueueCreate( queueSize, sizeof( char[messageSize] ) );
-    sensor_SHR_queue_handle = xQueueCreate( queueSize, sizeof( char[messageSize] ) );
-    sensor_UTS_queue_handle = xQueueCreate( queueSize, sizeof( char[messageSize] ) );
+    sensor_LDR_queue_handle = xQueueCreate( queueSize, messageSize);
+    sensor_THR_queue_handle = xQueueCreate( queueSize, messageSize );
+    sensor_SHR_queue_handle = xQueueCreate( queueSize, messageSize );
+    sensor_UTS_queue_handle = xQueueCreate( queueSize, messageSize );
+    funcionamento_WPM_queue_handle = xQueueCreate( queueSize,  messageSize);
 
     //Cria semaforos para proteção de dados
     sensorValuesSemaphore = xSemaphoreCreateMutex();
@@ -1050,6 +1063,7 @@ void app_main(void){
 
     //Inicializando Handlers de tarefas como nulo
     xHandleSensorValues = NULL;
+    xHandleDecision = NULL;
 
     char strftime_buf[64];
     // Definindo timezone para o horário padrão de Brazília (UTC+3)
@@ -1060,9 +1074,10 @@ void app_main(void){
     ESP_LOGI(SNTP, "The current date/time in Brasilia is: %s", strftime_buf);
 
     // Criação das tarefas
-    //xTaskCreatePinnedToCore(&vDecision, "decision", 2048, ( void * ) 1, 5, NULL, 0);
-    xTaskCreatePinnedToCore(&vSensorValues, "sensorValues", STACK_SIZE_SENSOR_VALUES, ( void * ) 1, 5, &xHandleSensorValues, 0);
-    //xTaskCreatePinnedToCore(&vProcessosMqtt, "processosMqtt", 2048, ( void * ) 1, 5, NULL, 1);
+    xTaskCreate(&vDecision, "decision", STACK_SIZE_DECISION, ( void * ) 1, 5, &xHandleDecision);
+    xTaskCreate(&vSensorValues, "sensorValues", STACK_SIZE_SENSOR_VALUES, ( void * ) 1, 5, &xHandleSensorValues);
+    //xTaskCreate(&vProcessosMqtt, "processosMqtt", STACK_SIZE_PROCESSOS_MQTT, ( void * ) 1, 5, NULL);
+    //xTaskCreate(&vDallyReset, "dallyReset", STACK_SIZE_DALLY_RESET, ( void * ) 1, 5, NULL);
 
 }
 
@@ -1070,10 +1085,12 @@ void app_main(void){
 
 //_______TAREFA_QUE_É_RESPONSÁVEL_PELO_FUNCIONAMENTO_DA_BOMBA_______
 void vDecision( void * pvParameters ){
-    
+
+    ESP_LOGI(decision,"Iniciando tarefa de tomada de decisão");
     //Carrega valores padrão para varificar o estado do vaso
     tempAdeq = temperaturaAdequadaPadrão;
     umidAdeq = umidadeAdequadaPadrão;
+    altuMin = alturaMinimaPadrão;
 
     //Carrega os valores padrões de tempo 
     qtdAtivacao = quantidadeAtivaçõesPadrão;
@@ -1086,6 +1103,7 @@ void vDecision( void * pvParameters ){
     //Variáveis referentes aos sensores
     float umidade = 0.0f;  //Variável para salvar o valor de umidade localmente
     float temperaturaMedia = 0.0f; //Variável para calcular a temperatura média
+    float altura = 0.0f;    //Variável que salva o valor da altura da culuna d'agua
 
     bool comTimer = 0;  //Variável que controla quando a bomba foi ativada com ou sem timer
     water_pump_state bombaDagua = BOMBA_DESLIGADA;  //Controla o estado da bomba
@@ -1113,29 +1131,38 @@ void vDecision( void * pvParameters ){
 
     while(1){
 
+        
         //Pegando o tempo atual
         time(&tempoAgora);
         setenv("TZ", "UTC+3", 1);
         tzset();
         localtime_r(&tempoAgora, &timeinfo);
+        //Se a última ativação não tiver sido definido, defina como igual ao tempo atual, só na primeira vez.
+        if(ultimaAtivacao.tm_year < 1990){
+            ultimaAtivacao = timeinfo;
+        }
 
         //Pega o semáforo para calcular a média de temperaturas
         if(xSemaphoreTake(sensorValuesSemaphore, t1s) == pdTRUE){
-
+            ESP_LOGI(decision,"Calculating avarage temperature and getting sensor values");
             //Pega a temperatura média dos quatro sensores de temperatura
             temperaturaMedia = (thr_tem[0] + thr_tem[1] + thr_tem[2] + thr_tem[3])/4;
             umidade = shr_pct;
+            altura = uts_dis;
             
             //Devolve o semaforo
             xSemaphoreGive(sensorValuesSemaphore);
         }
 
+
         //Verifica o que fazer caso 
         switch(bombaDagua){
             case BOMBA_DESLIGADA:
+                ESP_LOGI(decision,"Water pump off");
 
                 //Verifica diferentes condições para ativar a bomba de água
-                if(temperaturaMedia > tempAdeq && umidade < umidAdeq){
+                if(temperaturaMedia > tempAdeq && umidade < umidAdeq && altuMin > altura){
+                    ESP_LOGI(decision,"Turning on water pump (emergency activation)");
                     //Altera a variável para ligado
                     bombaDagua = BOMBA_LIGADA;
                     
@@ -1151,6 +1178,7 @@ void vDecision( void * pvParameters ){
                 }    
                 
                 //Verifica condição de ativação por tempo
+                ESP_LOGI(decision,"Checking turn on timed values for the water pump");
                 for(int i = 0; i< qtdAtivacao; i++){
                     condicaoAtivacao[i] = timestampMarker[i] == 0 && timeinfo.tm_hour == horaAtivacao[i] && timeinfo.tm_min == minAtivacao[i];
                     if(condicaoAtivacao[i]){
@@ -1160,10 +1188,9 @@ void vDecision( void * pvParameters ){
 
                 //Pega o semaforo de variaveis de controle
                 if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
-                 
                     //Verifica se é para ativar a bomba de ativação da bomba
                     if(ativou){
-                        
+                        ESP_LOGI(decision,"Turning on water pump (timed activation)");
                         //Marca qual o timestamp que passou e subtrai de ativações restantes
                         for(int i = 0; i < qtdAtivacao; i++){
                             if(condicaoAtivacao[i]){
@@ -1205,7 +1232,7 @@ void vDecision( void * pvParameters ){
                     if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
                         //Se tiver passado do tempo máximo
                         if(timeDiff > tempoAtivacaoProvisoria){
-
+                            ESP_LOGI(decision,"Turning off water pump (emergency activation)");
                             //Altera a variável para desligado
                             bombaDagua = BOMBA_DESLIGADA;
 
@@ -1234,9 +1261,10 @@ void vDecision( void * pvParameters ){
 
                     //Pega o semaforo de variaveis de controle
                     if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
-
+                        ESP_LOGI(decision,"Turning off water pump (timed activation)");
                         //Compara a diferença de tempo com o tempo de ativação por período
                         if(timeDiff > tempoAtivaçãoPorPeriodo){
+                            
                             //Altera a variável para desligado
                             bombaDagua = BOMBA_DESLIGADA;
 
@@ -1272,11 +1300,11 @@ void vDecision( void * pvParameters ){
         strftime(timeStringUltimaAtivacao, sizeof(timeStringUltimaAtivacao), "%c", &ultimaAtivacao);
 
         //Criando mensagem para as filas
-        ESP_LOGI(SNTP, "Creating queue Bomb status message and adding to queue");
+        ESP_LOGI(decision, "Creating queue Bomb status message and adding to queue");
         sprintf(message_WPM,"{\"DataHora\": \"%s\", \"Estado_Bomba\": %d, \"Ultima_Ativacao\": %s, \"Quanto_tempo_ficou_ligado(Min)\": %d}", timeString , bombaDagua, timeStringUltimaAtivacao, tempoAtivacaoQuePassou);
         
         //Enviando mensagem para a fila 
-        ESP_ERROR_CHECK(xQueueSend(funcionamento_WPM_queue_handle, message_WPM, t500ms));
+        xQueueSend(funcionamento_WPM_queue_handle, message_WPM, t500ms);
         vTaskDelay(t5s);
     }
 }
@@ -1342,7 +1370,7 @@ void vDallyReset( void * pvParameters ){
 //_______TAREFA_QUE_FAZ_A_LEITURA_DOS_SENSORES_______
 void vSensorValues( void * pvParameters ){
     
-    ESP_LOGI(sensorValues,"Entrando na tarefa de leitura dos Sensores");
+    ESP_LOGI(sensorValues,"Iniciando tarefa de leitura dos Sensores");
     //Variáveis para tentar atualizar o relógio
     int retry = 0;
     const int retry_count = 15;
@@ -1448,10 +1476,10 @@ void vSensorValues( void * pvParameters ){
         if(xSemaphoreTake(sensorValuesSemaphore, t1s) == pdTRUE){
             //Convertendo os valores de resistencia para Lux
             ESP_LOGI(sensorValues,"Converting resistence values into respective sensor units");
-            ldr_lux[0] = lux*pow(resistenciaParaValorLux/ldr_res[0],1/ldrGamma);
-            ldr_lux[1] = lux*pow(resistenciaParaValorLux/ldr_res[1],1/ldrGamma);
-            ldr_lux[2] = lux*pow(resistenciaParaValorLux/ldr_res[2],1/ldrGamma);
-            ldr_lux[3] = lux*pow(resistenciaParaValorLux/ldr_res[3],1/ldrGamma);
+            ldr_lux[0] = lux*pow(resistenciaParaValorLuxN/ldr_res[0],1/ldrGamma);
+            ldr_lux[1] = lux*pow(resistenciaParaValorLuxO/ldr_res[1],1/ldrGamma);
+            ldr_lux[2] = lux*pow(resistenciaParaValorLuxL/ldr_res[2],1/ldrGamma);
+            ldr_lux[3] = lux*pow(resistenciaParaValorLuxS/ldr_res[3],1/ldrGamma);
 
             //Convertendo os valores de resistencia para Graus Celsius
             thr_tem[0] = (thrB*kelvin)/(kelvin*log(thr_res[0]/resistenciaParaValorKelvin)+thrB) - kelvinCelsius;
