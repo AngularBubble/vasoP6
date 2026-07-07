@@ -108,14 +108,14 @@
 #define LEDC_TIMER LEDC_TIMER_0 //Timer do LEDC
 #define LEDC_CHANNEL LEDC_CHANNEL_0 //Canal LEDC
 #define LEDC_MODE LEDC_LOW_SPEED_MODE //Modo do LEDC
-#define LEDC_DUTY_RES LEDC_TIMER_10_BIT //Resolução do LEDC
-#define LEDC_DUTY_ON 4096 // Define o duty para ligado para 50%. (2 ** 13) * 50% = 4096]
+#define LEDC_DUTY_RES LEDC_TIMER_13_BIT //Resolução do LEDC
+#define LEDC_DUTY_ON 7372.8 // Define o duty para ligado para 50%. (2 ** 13) * 50% = 4096]
 #define LEDC_DUTY_OFF 0 // Define o duty para desligado para 0%
 
 //______________________DEFINIÇÃO_PARA_CONFIGURAÇÃO_DOS_PINOS_DE_MCPWM_______________________
 
-#define AJ_SR04M_TRIG_GPIO  15
-#define AJ_SR04M_ECHO_GPIO  2
+#define AJ_SR04M_TRIG_GPIO  19
+#define AJ_SR04M_ECHO_GPIO  21
 
 //___________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DAS_FILAS__________________________
 
@@ -160,6 +160,7 @@
 
 //Para atributos que aceitam Minutos
 #define t1m 1 //1min
+#define t10m 10 //1min
 #define t30m 30 //30min
 #define t60m 60 //1hora/60min
 
@@ -167,14 +168,14 @@
 #define t3600s 3600 //1h/60min/3600seg
 
 //Tempos do dia para ativação da bomba default
-#define timeHour1 7
-#define timeMin1 30
+#define timeHour1 7 //7
+#define timeMin1 30 //30
 
-#define timeHour2 12
-#define timeMin2 0
+#define timeHour2 12    //12
+#define timeMin2 0      //0
 
-#define timeHour3 18 
-#define timeMin3 30
+#define timeHour3 18    //18
+#define timeMin3 30   //30
 
 #define timeHourNotConf 24 
 #define timeMinNotConf 60
@@ -192,7 +193,7 @@
 #define umidadeAdequadaPadrão 70
 #define quantidadeAtivaçõesPadrão 3
 #define quantidadeAtivaçõesMaxima 10
-#define alturaMinimaPadrão 27
+#define alturaMinimaPadrão 32.5
 
 //_____________________________________VARIÁVEIS_GLOBAIS_____________________________________
 
@@ -396,7 +397,7 @@ static bool aj_sr04m_echo_callback(mcpwm_cap_channel_handle_t cap_chan, const mc
     static uint32_t cap_val_end_of_sample = 0;
     TaskHandle_t task_to_notify = (TaskHandle_t)user_data;
     BaseType_t high_task_wakeup = pdFALSE;
-
+    
     //calculate the interval in the ISR,
     //so that the interval will be always correct even when capture_queue is not handled in time and overflow.
     if (edata->cap_edge == MCPWM_CAP_EDGE_POS) {
@@ -1095,7 +1096,7 @@ void vDecision( void * pvParameters ){
     //Carrega os valores padrões de tempo 
     qtdAtivacao = quantidadeAtivaçõesPadrão;
     tempoAtivacaoProvisoria = t1m;
-    tempoAtivaçãoTotal = t30m;
+    tempoAtivaçãoTotal = t10m;
     tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/qtdAtivacao;
     contaAtivacaoRestante = qtdAtivacao; 
     tempoAtivacaoQuePassou = 0;
@@ -1138,7 +1139,7 @@ void vDecision( void * pvParameters ){
         tzset();
         localtime_r(&tempoAgora, &timeinfo);
         //Se a última ativação não tiver sido definido, defina como igual ao tempo atual, só na primeira vez.
-        if(ultimaAtivacao.tm_year < 1990){
+        if(ultimaAtivacao.tm_year < 100){
             ultimaAtivacao = timeinfo;
         }
 
@@ -1158,7 +1159,7 @@ void vDecision( void * pvParameters ){
         //Verifica o que fazer caso 
         switch(bombaDagua){
             case BOMBA_DESLIGADA:
-                ESP_LOGI(decision,"Water pump off");
+                ESP_LOGI(decision,"Water pump OFF");
 
                 //Verifica diferentes condições para ativar a bomba de água
                 if(temperaturaMedia > tempAdeq && umidade < umidAdeq && altuMin > altura){
@@ -1222,16 +1223,16 @@ void vDecision( void * pvParameters ){
 
                 break;
             case BOMBA_LIGADA:
+                ESP_LOGI(decision,"Water pump ON");
                 
                 //Se a bomba for ativada sem timer
                 if(comTimer == 0){
                     //Calcula a diferença de tempo
                     timeDiff = tmDifferenceInMinutes(timeinfo, ultimaAtivacao);
-
                     //Pega o semaforo de variaveis de controle
                     if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
                         //Se tiver passado do tempo máximo
-                        if(timeDiff > tempoAtivacaoProvisoria){
+                        if(timeDiff >= tempoAtivacaoProvisoria){
                             ESP_LOGI(decision,"Turning off water pump (emergency activation)");
                             //Altera a variável para desligado
                             bombaDagua = BOMBA_DESLIGADA;
@@ -1256,6 +1257,7 @@ void vDecision( void * pvParameters ){
                         xSemaphoreGive(dallyControlValuesSemaphore);
                     }
                 }else{
+        
                     //Calcula a diferença de tempo
                     timeDiff = tmDifferenceInMinutes(timeinfo, ultimaAtivacao);
 
@@ -1263,7 +1265,7 @@ void vDecision( void * pvParameters ){
                     if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
                         ESP_LOGI(decision,"Turning off water pump (timed activation)");
                         //Compara a diferença de tempo com o tempo de ativação por período
-                        if(timeDiff > tempoAtivaçãoPorPeriodo){
+                        if(timeDiff >= tempoAtivaçãoPorPeriodo){
                             
                             //Altera a variável para desligado
                             bombaDagua = BOMBA_DESLIGADA;
@@ -1303,6 +1305,7 @@ void vDecision( void * pvParameters ){
         ESP_LOGI(decision, "Creating queue Bomb status message and adding to queue");
         sprintf(message_WPM,"{\"DataHora\": \"%s\", \"Estado_Bomba\": %d, \"Ultima_Ativacao\": %s, \"Quanto_tempo_ficou_ligado(Min)\": %d}", timeString , bombaDagua, timeStringUltimaAtivacao, tempoAtivacaoQuePassou);
         
+        ESP_LOGI(decision,"%s",message_WPM);
         //Enviando mensagem para a fila 
         xQueueSend(funcionamento_WPM_queue_handle, message_WPM, t500ms);
         vTaskDelay(t5s);
@@ -1529,7 +1532,7 @@ void vSensorValues( void * pvParameters ){
                 xQueueSend(sensor_SHR_queue_handle, message_SHR, t500ms);
                 xQueueSend(sensor_UTS_queue_handle, message_UTS, t500ms);
             }
-            //Devolve o semaforo
+             //Devolve o semaforo
             xSemaphoreGive(sensorValuesSemaphore);
         }
 
