@@ -72,6 +72,10 @@
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
+//_____________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_MQTT_____________________________
+
+#define EXAMPLE_CONFIG_BROKER_URL "mqtts://test.mosquitto.org"
+
 //_________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DE_STACK_SIZE________________________
 #define STACK_SIZE_SENSOR_VALUES 4096
 #define STACK_SIZE_DECISION 4096
@@ -199,6 +203,8 @@
 
 static const char *sensorValues = "sensorValues";  //Tag para os Logs referentes a tarefa sensorValues
 static const char *decision = "decision";  //Tag para os Logs referentes a tarefa sensorValues
+static const char *processosMqtt = "processosMqtt";  //Tag para os Logs referentes a tarefa sensorValues
+
 static const char *LittleFS = "LittleFS";  //Tag para os Logs referentes ao LittleFS
 static const char *MQTT5 = "MQTT5";     //Tag para os Logs referentes ao MQTT
 static const char *MCPWM = "MCPWM";  //Tag para os Logs referentes a MCPWM
@@ -208,6 +214,7 @@ static const char *ADC = "ADC";  //Tag para os Logs referentes a ADC
 
 static TaskHandle_t xHandleSensorValues;
 static TaskHandle_t xHandleDecision;
+static TaskHandle_t xHandleProcessosMqtt;
 
 static EventGroupHandle_t s_wifi_event_group;   //Gerenciador de eventos de Wifi
 
@@ -588,32 +595,33 @@ static void mqtt5_app_start(void){
         .will_delay_interval = 10,
         .payload_format_indicator = true,
         .message_expiry_interval = 10,
-        .response_topic = "/test/response",
+        .response_topic = "/ProtoVaso/response",
         .correlation_data = "123456",
         .correlation_data_len = 6,
     };
 
     //Configurações do Cliente
     esp_mqtt_client_config_t mqtt5_cfg = {
-        .broker.address.uri = CONFIG_BROKER_URL,
+        .broker.address.uri = EXAMPLE_CONFIG_BROKER_URL,
         .session.protocol_ver = MQTT_PROTOCOL_V_5,
-        .network.disable_auto_reconnect = true,
+        .network.disable_auto_reconnect = false,
         .credentials.username = "",
         .credentials.authentication.password = "",
-        .session.last_will.topic = "/topic/will",
+        .session.last_will.topic = "/ProtoVaso/will",
         .session.last_will.msg = "i will leave",
         .session.last_will.msg_len = 12,
         .session.last_will.qos = 1,
         .session.last_will.retain = true,
+        .broker.verification.skip_cert_common_name_check = true,
     };
 
     //Construtor do Handler
     client = esp_mqtt_client_init(&mqtt5_cfg);
 
     /* Define propriedades da conexão e do propriedades do usuário*/
-    esp_mqtt5_client_set_user_property(&connect_property.user_property, user_property_arr, USE_PROPERTY_ARR_SIZE);
-    esp_mqtt5_client_set_user_property(&connect_property.will_user_property, user_property_arr, USE_PROPERTY_ARR_SIZE);
-    esp_mqtt5_client_set_connect_property(client, &connect_property);
+    ESP_ERROR_CHECK(esp_mqtt5_client_set_user_property(&connect_property.user_property, user_property_arr, USE_PROPERTY_ARR_SIZE));
+    ESP_ERROR_CHECK(esp_mqtt5_client_set_user_property(&connect_property.will_user_property, user_property_arr, USE_PROPERTY_ARR_SIZE));
+    ESP_ERROR_CHECK(esp_mqtt5_client_set_connect_property(client, &connect_property));
 
      /* Se for chamar esp_mqtt5_client_set_user_property para definir propriedades do usuário, NÃO esqueça de deleta-los.
      * esp_mqtt5_client_set_connect_property irá alocar um buffer para armazenar as user_property e você pode deleta-la depois.
@@ -622,8 +630,8 @@ static void mqtt5_app_start(void){
     esp_mqtt5_client_delete_user_property(connect_property.will_user_property);
 
     /* O último argumento pode ser usado para passar dados para o event handler, nesse exemplo mqtt_event_handler */
-    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt5_event_handler, NULL);
-    esp_mqtt_client_start(client);
+    ESP_ERROR_CHECK(esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt5_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_mqtt_client_start(client));
 }
 
 //_______FUNÇÃO_QUE_INICIA_O_WIFI_______
@@ -1065,6 +1073,7 @@ void app_main(void){
     //Inicializando Handlers de tarefas como nulo
     xHandleSensorValues = NULL;
     xHandleDecision = NULL;
+    xHandleProcessosMqtt = NULL;
 
     char strftime_buf[64];
     // Definindo timezone para o horário padrão de Brazília (UTC+3)
@@ -1077,7 +1086,7 @@ void app_main(void){
     // Criação das tarefas
     xTaskCreate(&vDecision, "decision", STACK_SIZE_DECISION, ( void * ) 1, 5, &xHandleDecision);
     xTaskCreate(&vSensorValues, "sensorValues", STACK_SIZE_SENSOR_VALUES, ( void * ) 1, 5, &xHandleSensorValues);
-    //xTaskCreate(&vProcessosMqtt, "processosMqtt", STACK_SIZE_PROCESSOS_MQTT, ( void * ) 1, 5, NULL);
+    xTaskCreate(&vProcessosMqtt, "processosMqtt", STACK_SIZE_PROCESSOS_MQTT, ( void * ) 1, 5, &xHandleProcessosMqtt);
     //xTaskCreate(&vDallyReset, "dallyReset", STACK_SIZE_DALLY_RESET, ( void * ) 1, 5, NULL);
 
 }
@@ -1548,13 +1557,13 @@ void vProcessosMqtt( void * pvParameters ){
     while(1){
 
         //Verifica se a conexão com o MQTT está disponível
-        ESP_LOGI(MQTT5, "Verifying if MQTT5 connection is available");
-        if(xSemaphoreTake(mqttAvailable, t30s)==pdTRUE){
-            ESP_LOGI(MQTT5, "Connection is available");
+        ESP_LOGI(processosMqtt, "Verifying if MQTT5 connection is available");
+        if(xSemaphoreTake(mqttAvailable, t1s)==pdTRUE){
+            ESP_LOGI(processosMqtt, "Connection is available");
             //Devolve semaforo após verificação
             xSemaphoreGive(mqttAvailable);
 
-            ESP_LOGI(MQTT5, "Receiving queue messages and sending");
+            ESP_LOGI(processosMqtt, "Receiving queue messages and sending");
             //Envia para o tópico do LDR
             if(xQueueReceive(sensor_LDR_queue_handle, messageBuffer, t1s)){
                 esp_mqtt_client_publish(client, topicoLDR, messageBuffer, 0, 2, 1);
@@ -1577,7 +1586,7 @@ void vProcessosMqtt( void * pvParameters ){
             
         }else{
             //Informa que não foi possível se conectar ao MQTT
-            ESP_LOGI(MQTT5, "Connection not available");
+            ESP_LOGI(processosMqtt, "Connection not available");
         }
         //Faz a tarefa esperar por 1 segundo
         vTaskDelay(t1s);
