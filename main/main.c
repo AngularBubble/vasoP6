@@ -74,7 +74,7 @@
 
 //_____________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_MQTT_____________________________
 
-#define EXAMPLE_CONFIG_BROKER_URL "mqtts://test.mosquitto.org"
+#define EXAMPLE_CONFIG_BROKER_URL "mqtts://192.168.1.6"
 
 //_________________________DEFINIÇÕES_PARA_CONFIGURAÇÃO_DE_STACK_SIZE________________________
 #define STACK_SIZE_SENSOR_VALUES 4096
@@ -160,6 +160,8 @@
 #define t1s 1000/portTICK_PERIOD_MS
 #define t2s 2000/portTICK_PERIOD_MS
 #define t5s 5000/portTICK_PERIOD_MS
+#define t10s 10000/portTICK_PERIOD_MS
+#define t15s 15000/portTICK_PERIOD_MS
 #define t30s 30000/portTICK_PERIOD_MS
 
 //Para atributos que aceitam Minutos
@@ -189,6 +191,7 @@
 #define topicoLDR "VASO_0/LDR"
 #define topicoTHR "VASO_0/THERMISTOR"
 #define topicoSHR "VASO_0/SOIL_HYGROMETER"
+#define topicoUTS "VASO_0/ULTRASOUND"
 #define topicoWPM "VASO_0/WATER_PUMP"
 
 //_____________________DEFINIÇÕES_UTILIZADAS_PARA_O_FUNCIONAMENTO_DO_VASO____________________
@@ -1312,7 +1315,7 @@ void vDecision( void * pvParameters ){
 
         //Criando mensagem para as filas
         ESP_LOGI(decision, "Creating queue Bomb status message and adding to queue");
-        sprintf(message_WPM,"{\"DataHora\": \"%s\", \"Estado_Bomba\": %d, \"Ultima_Ativacao\": %s, \"Quanto_tempo_ficou_ligado(Min)\": %d}", timeString , bombaDagua, timeStringUltimaAtivacao, tempoAtivacaoQuePassou);
+        sprintf(message_WPM,"{\"DataHora\": \"%s\", \"Estado_Bomba\": %d, \"Ultima_Ativacao\": \"%s\", \"Quanto_tempo_ficou_ligado(Min)\": %d}", timeString , bombaDagua, timeStringUltimaAtivacao, tempoAtivacaoQuePassou);
         
         ESP_LOGI(decision,"%s",message_WPM);
         //Enviando mensagem para a fila 
@@ -1557,7 +1560,7 @@ void vProcessosMqtt( void * pvParameters ){
     while(1){
 
         //Verifica se a conexão com o MQTT está disponível
-        ESP_LOGI(processosMqtt, "Verifying if MQTT5 connection is available");
+        //ESP_LOGI(processosMqtt, "Verifying if MQTT5 connection is available");
         if(xSemaphoreTake(mqttAvailable, t1s)==pdTRUE){
             ESP_LOGI(processosMqtt, "Connection is available");
             //Devolve semaforo após verificação
@@ -1579,6 +1582,11 @@ void vProcessosMqtt( void * pvParameters ){
                 esp_mqtt_client_publish(client, topicoSHR, messageBuffer, 0, 2, 1);
             }
 
+            //Envia para o tópico do Ultrassound
+            if(xQueueReceive(sensor_UTS_queue_handle, messageBuffer, t1s)){
+                esp_mqtt_client_publish(client, topicoUTS, messageBuffer, 0, 2, 1);
+            }
+
             //Envia para o tópico da Bomba d'agua
             if(xQueueReceive(funcionamento_WPM_queue_handle, messageBuffer, t1s)){
                 esp_mqtt_client_publish(client, topicoWPM, messageBuffer, 0, 2, 1);
@@ -1586,9 +1594,9 @@ void vProcessosMqtt( void * pvParameters ){
             
         }else{
             //Informa que não foi possível se conectar ao MQTT
-            ESP_LOGI(processosMqtt, "Connection not available");
+            ESP_LOGI(processosMqtt, "Connection not available at the moment");
         }
-        //Faz a tarefa esperar por 1 segundo
-        vTaskDelay(t1s);
+        //Faz a tarefa esperar por 15 segundo
+        vTaskDelay(t10s);
     }
 }
