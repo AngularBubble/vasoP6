@@ -595,7 +595,7 @@ static void mqtt5_app_start(void){
         .will_delay_interval = 10,
         .payload_format_indicator = true,
         .message_expiry_interval = 10,
-        .response_topic = "/ProtoVaso/response",
+        .response_topic = "/test/response",
         .correlation_data = "123456",
         .correlation_data_len = 6,
     };
@@ -607,7 +607,7 @@ static void mqtt5_app_start(void){
         .network.disable_auto_reconnect = false,
         .credentials.username = "",
         .credentials.authentication.password = "",
-        .session.last_will.topic = "/ProtoVaso/will",
+        .session.last_will.topic = "/topic/will",
         .session.last_will.msg = "i will leave",
         .session.last_will.msg_len = 12,
         .session.last_will.qos = 1,
