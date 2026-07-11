@@ -207,7 +207,8 @@
 static const char *sensorValues = "sensorValues";  //Tag para os Logs referentes a tarefa sensorValues
 static const char *decision = "decision";  //Tag para os Logs referentes a tarefa sensorValues
 static const char *processosMqtt = "processosMqtt";  //Tag para os Logs referentes a tarefa sensorValues
-
+static const char *dallyReset = "dallyReset";   //Tag para os logs referentes a tarefa dallyReset
+static const char *saveConfigData = "saveConfigData";   //Tag para os logs referentes para a tarefa saveConfigData
 static const char *LittleFS = "LittleFS";  //Tag para os Logs referentes ao LittleFS
 static const char *MQTT5 = "MQTT5";     //Tag para os Logs referentes ao MQTT
 static const char *MCPWM = "MCPWM";  //Tag para os Logs referentes a MCPWM
@@ -218,6 +219,7 @@ static const char *ADC = "ADC";  //Tag para os Logs referentes a ADC
 static TaskHandle_t xHandleSensorValues;
 static TaskHandle_t xHandleDecision;
 static TaskHandle_t xHandleProcessosMqtt;
+static TaskHandle_t xHandleDallyReset;
 
 static EventGroupHandle_t s_wifi_event_group;   //Gerenciador de eventos de Wifi
 
@@ -972,6 +974,7 @@ void vDecision( void * pvParameters );
 void vDallyReset( void * pvParameters );
 void vSensorValues( void * pvParameters );
 void vProcessosMqtt( void * pvParameters );
+void vSaveConfigData( void * pvParameters );
 
 void app_main(void){
     //Logs do Sistema
@@ -1077,6 +1080,7 @@ void app_main(void){
     xHandleSensorValues = NULL;
     xHandleDecision = NULL;
     xHandleProcessosMqtt = NULL;
+    xHandleDallyReset = NULL;
 
     char strftime_buf[64];
     // Definindo timezone para o horário padrão de Brazília (UTC+3)
@@ -1090,12 +1094,22 @@ void app_main(void){
     xTaskCreate(&vDecision, "decision", STACK_SIZE_DECISION, ( void * ) 1, 5, &xHandleDecision);
     xTaskCreate(&vSensorValues, "sensorValues", STACK_SIZE_SENSOR_VALUES, ( void * ) 1, 5, &xHandleSensorValues);
     xTaskCreate(&vProcessosMqtt, "processosMqtt", STACK_SIZE_PROCESSOS_MQTT, ( void * ) 1, 5, &xHandleProcessosMqtt);
-    //xTaskCreate(&vDallyReset, "dallyReset", STACK_SIZE_DALLY_RESET, ( void * ) 1, 5, NULL);
+    xTaskCreate(&vDallyReset, "dallyReset", STACK_SIZE_DALLY_RESET, ( void * ) 1, 5, &xHandleDallyReset);
 
 }
 
 //_____________________________IMPLEMENTAÇÃO_DAS_TAREFAS_DO_RTOS_____________________________
 
+
+void vSaveConfigData(void * pvParameters){
+
+    ESP_LOGI(decision,"Iniciando tarefa de salvamento de dados");
+    
+    while(1){
+
+        vTaskDelay(t5s);
+    }
+}
 //_______TAREFA_QUE_É_RESPONSÁVEL_PELO_FUNCIONAMENTO_DA_BOMBA_______
 void vDecision( void * pvParameters ){
 
@@ -1143,7 +1157,6 @@ void vDecision( void * pvParameters ){
     char message_WPM[messageSize];   //Mensagem para os sensores LDRs
 
     while(1){
-
         
         //Pegando o tempo atual
         time(&tempoAgora);
@@ -1326,6 +1339,8 @@ void vDecision( void * pvParameters ){
 
 //_______TAREFA_QUE_FAZ_O_RESET_DIARIO_DO_SISTEMA_______
 void vDallyReset( void * pvParameters ){
+
+    ESP_LOGI(sensorValues,"Iniciando tarefa de reset diario");
     //Variável que armazena o próximo dia
     int nextDay;
     
@@ -1377,6 +1392,8 @@ void vDallyReset( void * pvParameters ){
 
             xSemaphoreGive(dallyControlValuesSemaphore);
         }
+
+        vTaskDelay(t30s);
 
     }
 
