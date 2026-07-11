@@ -163,6 +163,7 @@
 #define t10s 10000/portTICK_PERIOD_MS
 #define t15s 15000/portTICK_PERIOD_MS
 #define t30s 30000/portTICK_PERIOD_MS
+#define t60s 60000/portTICK_PERIOD_MS
 
 //Para atributos que aceitam Minutos
 #define t1m 1 //1min
@@ -202,6 +203,12 @@
 #define quantidadeAtivaçõesMaxima 10
 #define alturaMinimaPadrão 32.5
 
+//__________________DEFINIÇÕES_UTILIZADAS_PARA_O_USO_DE_SISTEMA_DE_ARTQUIVOS_________________
+
+#define maxLines 400
+#define dataFileName "/files/data.txt"
+#define configFileName "/files/config.txt"
+
 //_____________________________________VARIÁVEIS_GLOBAIS_____________________________________
 
 static const char *sensorValues = "sensorValues";  //Tag para os Logs referentes a tarefa sensorValues
@@ -240,6 +247,7 @@ QueueHandle_t funcionamento_WPM_queue_handle;  //Fila de mensagens da WaterPump 
 SemaphoreHandle_t sensorValuesSemaphore; //Semaforo para proteger o valor final dos sensores
 SemaphoreHandle_t dallyControlValuesSemaphore;  //Semaforo para projeter a manipulação das variáveis de controle diario
 SemaphoreHandle_t mqttAvailable;  //Semaforo que indica quando o MQTT está disponível
+SemaphoreHandle_t dataFileSemaphore; //Semaforo que protege a escrita e leitura de arquivo
 
 esp_mqtt_client_handle_t client; //Gerenciador do cliente MQTT
 
@@ -940,7 +948,7 @@ void littlefs_init_sta(){
     ESP_LOGI(LittleFS, "Initializing LittleFS");
 
     esp_vfs_littlefs_conf_t conf = {
-        .base_path = "/littlefs",
+        .base_path = "/files",
         .partition_label = "storage",
         .format_if_mount_failed = true,
         .dont_mount = false,
@@ -974,7 +982,7 @@ void vDecision( void * pvParameters );
 void vDallyReset( void * pvParameters );
 void vSensorValues( void * pvParameters );
 void vProcessosMqtt( void * pvParameters );
-void vSaveConfigData( void * pvParameters );
+void vSaveSystemData( void * pvParameters );
 
 void app_main(void){
     //Logs do Sistema
@@ -1091,22 +1099,39 @@ void app_main(void){
     ESP_LOGI(SNTP, "The current date/time in Brasilia is: %s", strftime_buf);
 
     // Criação das tarefas
-    xTaskCreate(&vDecision, "decision", STACK_SIZE_DECISION, ( void * ) 1, 5, &xHandleDecision);
-    xTaskCreate(&vSensorValues, "sensorValues", STACK_SIZE_SENSOR_VALUES, ( void * ) 1, 5, &xHandleSensorValues);
-    xTaskCreate(&vProcessosMqtt, "processosMqtt", STACK_SIZE_PROCESSOS_MQTT, ( void * ) 1, 5, &xHandleProcessosMqtt);
-    xTaskCreate(&vDallyReset, "dallyReset", STACK_SIZE_DALLY_RESET, ( void * ) 1, 5, &xHandleDallyReset);
+    xTaskCreatePinnedToCore(&vSensorValues, "sensorValues", STACK_SIZE_SENSOR_VALUES, ( void * ) 1, 5, &xHandleSensorValues, 0);
+    xTaskCreatePinnedToCore(&vDecision, "decision", STACK_SIZE_DECISION, ( void * ) 1, 4, &xHandleDecision, 0);
+    xTaskCreatePinnedToCore(&vProcessosMqtt, "processosMqtt", STACK_SIZE_PROCESSOS_MQTT, ( void * ) 1, 4, &xHandleProcessosMqtt, 1);
+    xTaskCreate(&vDallyReset, "dallyReset", STACK_SIZE_DALLY_RESET, ( void * ) 1, 4, &xHandleDallyReset);
 
 }
 
 //_____________________________IMPLEMENTAÇÃO_DAS_TAREFAS_DO_RTOS_____________________________
 
 
-void vSaveConfigData(void * pvParameters){
+void vSaveSystemData(void * pvParameters){
 
     ESP_LOGI(decision,"Iniciando tarefa de salvamento de dados");
-    
+    //Variable to read file
+    FILE *fData;
+    char fileLine[messageSize]; 
     while(1){
+        if(xSemaphoreTake(dataFileSemaphore,t1s)){
+            
+            ESP_LOGE(saveConfigData, "Tentando abrir arquivo.");
+            
+            //Opening file data
+            fData = fopen(dataFileName, "a");
+            
+            //If file is null than error
+            if(fData != NULL){
+                
+            }else{
+                ESP_LOGE(saveConfigData, "Não foi possível abrir o arquivo.");
+            }
 
+            xSemaphoreGive(dataFileSemaphore);
+        }
         vTaskDelay(t5s);
     }
 }
@@ -1333,7 +1358,7 @@ void vDecision( void * pvParameters ){
         ESP_LOGI(decision,"%s",message_WPM);
         //Enviando mensagem para a fila 
         xQueueSend(funcionamento_WPM_queue_handle, message_WPM, t500ms);
-        vTaskDelay(t5s);
+        vTaskDelay(t60s);
     }
 }
 
@@ -1565,7 +1590,7 @@ void vSensorValues( void * pvParameters ){
             xSemaphoreGive(sensorValuesSemaphore);
         }
 
-        vTaskDelay(t30s);
+        vTaskDelay(t60s);
     }
 }
 
@@ -1580,10 +1605,11 @@ void vProcessosMqtt( void * pvParameters ){
         //ESP_LOGI(processosMqtt, "Verifying if MQTT5 connection is available");
         if(xSemaphoreTake(mqttAvailable, t1s)==pdTRUE){
             ESP_LOGI(processosMqtt, "Connection is available");
+
             //Devolve semaforo após verificação
             xSemaphoreGive(mqttAvailable);
 
-            ESP_LOGI(processosMqtt, "Receiving queue messages and sending");
+            ESP_LOGI(processosMqtt, "Reading queue messages and sending");
             //Envia para o tópico do LDR
             if(xQueueReceive(sensor_LDR_queue_handle, messageBuffer, t1s)){
                 esp_mqtt_client_publish(client, topicoLDR, messageBuffer, 0, 2, 1);
