@@ -247,6 +247,7 @@ QueueHandle_t funcionamento_WPM_queue_handle;  //Fila de mensagens da WaterPump 
 SemaphoreHandle_t sensorValuesSemaphore; //Semaforo para proteger o valor final dos sensores
 SemaphoreHandle_t dallyControlValuesSemaphore;  //Semaforo para projeter a manipulação das variáveis de controle diario
 SemaphoreHandle_t mqttAvailable;  //Semaforo que indica quando o MQTT está disponível
+SemaphoreHandle_t writeDataFile;  //Semaforo que indica quando é necessário escrever no arquivo de dados
 SemaphoreHandle_t dataFileSemaphore; //Semaforo que protege a escrita e leitura de arquivo
 
 esp_mqtt_client_handle_t client; //Gerenciador do cliente MQTT
@@ -1036,6 +1037,8 @@ void app_main(void){
     sensorValuesSemaphore = xSemaphoreCreateMutex();
     dallyControlValuesSemaphore = xSemaphoreCreateMutex(); 
     mqttAvailable = xSemaphoreCreateBinary();
+    writeDataFile = xSemaphoreCreateBinary();
+    dataFileSemaphore = xSemaphoreCreateMutex(); 
 
     //Iniciando NVS
     esp_err_t ret = nvs_flash_init();
@@ -1112,20 +1115,69 @@ void app_main(void){
 void vSaveSystemData(void * pvParameters){
 
     ESP_LOGI(decision,"Iniciando tarefa de salvamento de dados");
-    //Variable to read file
-    FILE *fData;
-    char fileLine[messageSize]; 
+    
+    FILE *fData;    //Variável para leitura do arquivo
+    char fileLine[messageSize];     //Variável que recebe o valor das mensagens das filas
+
     while(1){
-        if(xSemaphoreTake(dataFileSemaphore,t1s)){
+        //Verifica se pode escrever no arquivo
+        if(xSemaphoreTake(dataFileSemaphore,t1s) == pdTRUE && xSemaphoreTake(writeDataFile, t1s)==pdTRUE){
             
-            ESP_LOGE(saveConfigData, "Tentando abrir arquivo.");
+            //Devolve semaforo de verificação
+            xSemaphoreGive(writeDataFile);
             
-            //Opening file data
+            ESP_LOGI(saveConfigData, "Tentando abrir arquivo.");
+            
+            //Abrindo arquivo de dados
             fData = fopen(dataFileName, "a");
             
-            //If file is null than error
+            //Se o arquivo for null então imprime mensagem de erro
             if(fData != NULL){
+                ESP_LOGI(saveConfigData, "Arquivo aberto, escrevendo dados...");
+                //Enquanto houverem mensagens na fila
+                while(0 < uxQueueMessagesWaiting(sensor_LDR_queue_handle)){
+                    //Recebendo mensagem da fila do LDR
+                    if(xQueueReceive(sensor_LDR_queue_handle, fileLine, t1s)){
+                        fprintf(fData,"LDR\n");
+                        fprintf(fData,"%s\n",fileLine);
+                    }
+                }
                 
+                while(0 < uxQueueMessagesWaiting(sensor_THR_queue_handle)){
+                    //Recebendo mensagem da fila do Thermistor
+                    if(xQueueReceive(sensor_THR_queue_handle, fileLine, t1s)){
+                        fprintf(fData,"THR\n");
+                        fprintf(fData,"%s\n",fileLine);
+                    }
+                }
+
+                while(0 < uxQueueMessagesWaiting(sensor_SHR_queue_handle)){
+                    //Recebendo mensagem da fila do Soil Hygrometer
+                    if(xQueueReceive(sensor_SHR_queue_handle, fileLine, t1s)){
+                        fprintf(fData,"SHR\n");
+                        fprintf(fData,"%s\n",fileLine);
+                    }
+                }
+
+                while(0 < uxQueueMessagesWaiting(sensor_UTS_queue_handle)){
+                    //Recebendo mensagem da fila do Ultrassound
+                    if(xQueueReceive(sensor_UTS_queue_handle, fileLine, t1s)){
+                        fprintf(fData,"SHR\n");
+                        fprintf(fData,"%s\n",fileLine);
+                    }
+                }
+
+                while(0 < uxQueueMessagesWaiting(funcionamento_WPM_queue_handle)){
+                    //Recebendo mensagem da fila da Bomba d'agua
+                    if(xQueueReceive(funcionamento_WPM_queue_handle, fileLine, t1s)){
+                        fprintf(fData,"WPM\n");
+                        fprintf(fData,"%s\n",fileLine);
+                    }
+                }
+
+                fclose(fData);
+                ESP_LOGI(saveConfigData, "Dados escritos com sucesso!");
+
             }else{
                 ESP_LOGE(saveConfigData, "Não foi possível abrir o arquivo.");
             }
