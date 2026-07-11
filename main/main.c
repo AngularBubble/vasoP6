@@ -1692,6 +1692,6 @@ void vProcessosMqtt( void * pvParameters ){
             ESP_LOGI(processosMqtt, "Connection not available at the moment");
         }
         //Faz a tarefa esperar por 15 segundo
-        vTaskDelay(t10s);
+        vTaskDelay(t5s);
     }
 }
