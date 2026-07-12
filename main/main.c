@@ -206,6 +206,7 @@
 //__________________DEFINIÇÕES_UTILIZADAS_PARA_O_USO_DE_SISTEMA_DE_ARTQUIVOS_________________
 
 #define maxLines 400
+#define maxMqttMaxTryout 3
 #define dataFileName "/files/data.txt"
 #define configFileName "/files/config.txt"
 
@@ -1123,9 +1124,6 @@ void vSaveSystemData(void * pvParameters){
         //Verifica se pode escrever no arquivo
         if(xSemaphoreTake(dataFileSemaphore,t1s) == pdTRUE && xSemaphoreTake(writeDataFile, t1s)==pdTRUE){
             
-            //Devolve semaforo de verificação
-            xSemaphoreGive(writeDataFile);
-            
             ESP_LOGI(saveConfigData, "Tentando abrir arquivo.");
             
             //Abrindo arquivo de dados
@@ -1162,7 +1160,7 @@ void vSaveSystemData(void * pvParameters){
                 while(0 < uxQueueMessagesWaiting(sensor_UTS_queue_handle)){
                     //Recebendo mensagem da fila do Ultrassound
                     if(xQueueReceive(sensor_UTS_queue_handle, fileLine, t1s)){
-                        fprintf(fData,"SHR\n");
+                        fprintf(fData,"UTS\n");
                         fprintf(fData,"%s\n",fileLine);
                     }
                 }
@@ -1177,14 +1175,13 @@ void vSaveSystemData(void * pvParameters){
 
                 fclose(fData);
                 ESP_LOGI(saveConfigData, "Dados escritos com sucesso!");
-
             }else{
                 ESP_LOGE(saveConfigData, "Não foi possível abrir o arquivo.");
             }
 
             xSemaphoreGive(dataFileSemaphore);
         }
-        vTaskDelay(t5s);
+        vTaskDelay(t10s);
     }
 }
 //_______TAREFA_QUE_É_RESPONSÁVEL_PELO_FUNCIONAMENTO_DA_BOMBA_______
@@ -1650,7 +1647,8 @@ void vSensorValues( void * pvParameters ){
 void vProcessosMqtt( void * pvParameters ){
     
     char messageBuffer[messageSize]; //Variável para retirar os valores da fila e envia-los por MQTT
-
+    FILE *fData; //Variável que recebe o arquivo de dados
+    uint8_t contagemTentativas = 0; //Conta a quantidade de tentativas para enviar as mensagem pelo MQTT 
     while(1){
 
         //Verifica se a conexão com o MQTT está disponível
@@ -1660,8 +1658,52 @@ void vProcessosMqtt( void * pvParameters ){
 
             //Devolve semaforo após verificação
             xSemaphoreGive(mqttAvailable);
+            if(xSemaphoreTake(dataFileSemaphore, t1s)){
 
-            ESP_LOGI(processosMqtt, "Reading queue messages and sending");
+                ESP_LOGI(processosMqtt,"Opening data file...");
+                //Variável para leitura do arquivo
+                fData = fopen(dataFileName, "r");
+                //Se ele conseguir abrir o arquivo
+                if(fData != NULL){
+                    ESP_LOGI(processosMqtt,"File open! Sending lines");
+                    //Enquanto ainda houver linhas
+                    while(fgets(messageBuffer, messageSize, fData)){
+                        if(strcmp(messageBuffer,"LDR")){
+                            //Se a mensagem tiver a tag de LDR
+                            fgets(messageBuffer, messageSize, fData);
+                            esp_mqtt_client_publish(client, topicoLDR, messageBuffer, 0, 2, 1);
+                        }else if(strcmp(messageBuffer,"THR")){
+                            //Se a mensagem tiver a tag de THR
+                            fgets(messageBuffer, messageSize, fData);
+                            esp_mqtt_client_publish(client, topicoTHR, messageBuffer, 0, 2, 1);
+                        }else if(strcmp(messageBuffer,"SHR")){
+                            //Se a mensagem tiver a tag de SHR
+                            fgets(messageBuffer, messageSize, fData);
+                            esp_mqtt_client_publish(client, topicoSHR, messageBuffer, 0, 2, 1);
+                        }else if(strcmp(messageBuffer,"UTS")){
+                            //Se a mensagem tiver a tag de UTS
+                            fgets(messageBuffer, messageSize, fData);
+                            esp_mqtt_client_publish(client, topicoUTS, messageBuffer, 0, 2, 1);
+                        }else if(strcmp(messageBuffer,"WPM")){
+                            //Se a mensagem tiver a tag de WPM
+                            fgets(messageBuffer, messageSize, fData);
+                            esp_mqtt_client_publish(client, topicoWPM, messageBuffer, 0, 2, 1);
+                        }
+                    }
+                    ESP_LOGI(processosMqtt,"All file lines sent! Clearing file...");
+                    freopen(dataFileName, "w", fData);
+                    if(fData != NULL){
+                        fclose(fData);
+                        ESP_LOGI(processosMqtt,"File cleared!");
+                    }else{
+                        ESP_LOGE(processosMqtt, "Failed to clear file!");
+                    }
+                }else{
+                    ESP_LOGE(processosMqtt,"Could not open data file");
+                }
+                xSemaphoreGive(dataFileSemaphore);
+            }
+            ESP_LOGI(processosMqtt, "Reading queue and sending messages");
             //Envia para o tópico do LDR
             if(xQueueReceive(sensor_LDR_queue_handle, messageBuffer, t1s)){
                 esp_mqtt_client_publish(client, topicoLDR, messageBuffer, 0, 2, 1);
@@ -1690,8 +1732,14 @@ void vProcessosMqtt( void * pvParameters ){
         }else{
             //Informa que não foi possível se conectar ao MQTT
             ESP_LOGI(processosMqtt, "Connection not available at the moment");
+            ++contagemTentativas;
+            if(contagemTentativas == maxMqttMaxTryout){
+                ESP_LOGI(processosMqtt,"Starting task to save file with data...");
+                contagemTentativas = 0;
+                xSemaphoreGive(writeDataFile);
+            }
         }
         //Faz a tarefa esperar por 15 segundo
-        vTaskDelay(t5s);
+        vTaskDelay(t10s);
     }
 }
