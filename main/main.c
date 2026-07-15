@@ -163,7 +163,10 @@
 #define t10s 10000/portTICK_PERIOD_MS
 #define t15s 15000/portTICK_PERIOD_MS
 #define t30s 30000/portTICK_PERIOD_MS
+#define t45s 45000/portTICK_PERIOD_MS
 #define t60s 60000/portTICK_PERIOD_MS
+#define t90s 90000/portTICK_PERIOD_MS
+#define t300s 300000/portTICK_PERIOD_MS
 
 //Para atributos que aceitam Minutos
 #define t1m 1 //1min
@@ -221,6 +224,7 @@ static const char *dallyReset = "dallyReset";   //Tag para os logs referentes a 
 static const char *saveDataFile = "saveDataFile";   //Tag para os logs referentes para a tarefa saveDataFile
 static const char *loadingDefaultValues = "loadingDefaultValues"; //Tag para os logs referentes ao carregamento de valores de configuração
 static const char *saveConfFile = "saveConfFile"; //Tag para os logs referentes a função que salva a configuração atual
+static const char *sleepSetup = "sleepSetup";   //Tag para os logs referentes a função de dormir
 static const char *LittleFS = "LittleFS";  //Tag para os Logs referentes ao LittleFS
 static const char *MQTT5 = "MQTT5";     //Tag para os Logs referentes ao MQTT
 static const char *MCPWM = "MCPWM";  //Tag para os Logs referentes a MCPWM
@@ -229,11 +233,13 @@ static const char *SNTP = "SNTP";  //Tag para os Logs referentes a SNTP
 static const char *ADC = "ADC";  //Tag para os Logs referentes a ADC
 
 
+
 static TaskHandle_t xHandleSensorValues;
 static TaskHandle_t xHandleDecision;
 static TaskHandle_t xHandleProcessosMqtt;
 static TaskHandle_t xHandleDallyReset;
 static TaskHandle_t xHandleSaveSystemData;
+static TaskHandle_t xHandleSleepSetup;
 
 static EventGroupHandle_t s_wifi_event_group;   //Gerenciador de eventos de Wifi
 
@@ -287,6 +293,8 @@ typedef enum{
     BOMBA_DESLIGADA,
     BOMBA_LIGADA
 } water_pump_state;
+
+water_pump_state bombaDagua;
 //_____________________________________PROPRIEDADES_MQTT_____________________________________
 
 //_______PROPRIEDADES_DO_USUÁRIO_______
@@ -450,61 +458,64 @@ static void vSaveConfFile(void){
     ESP_LOGI(saveConfFile,"Updating config file");
 
     FILE *fConfig;
-
-    fConfig = fopen(configFileName,"w");
-    if(fConfig != NULL){
-        fprintf(fConfig, "TA %f\n",tempAdeq);
-        fprintf(fConfig, "UA %f\n",umidAdeq);
-        fprintf(fConfig, "AM %f\n",altuMin);
-        fprintf(fConfig, "TAP %d\n",tempoAtivacaoProvisoria);
-        fprintf(fConfig, "TAT %d\n",tempoAtivaçãoTotal);
-        fprintf(fConfig, "TAQP %d\n",tempoAtivacaoQuePassou);
-        fprintf(fConfig, "CAR %d\n",contaAtivacaoRestante);
-        fprintf(fConfig, "UATSEC %d\n",ultimaAtivacao.tm_sec);
-        fprintf(fConfig, "UATMIN %d\n",ultimaAtivacao.tm_min);
-        fprintf(fConfig, "UATHOUR %d\n",ultimaAtivacao.tm_hour);
-        fprintf(fConfig, "UATMDAY %d\n",ultimaAtivacao.tm_mday);
-        fprintf(fConfig, "UATMON %d\n",ultimaAtivacao.tm_mon);
-        fprintf(fConfig, "UATYEAR %d\n",ultimaAtivacao.tm_year);
-        fprintf(fConfig, "UATWDAY %d\n",ultimaAtivacao.tm_wday);
-        fprintf(fConfig, "UATYDAY %d\n",ultimaAtivacao.tm_yday);
-        fprintf(fConfig, "UATISDST %d\n",ultimaAtivacao.tm_isdst);
-        fprintf(fConfig, "H0 %d\n",horaAtivacao[0]);
-        fprintf(fConfig, "M0 %d\n",minAtivacao[0]);
-        fprintf(fConfig, "H1 %d\n",horaAtivacao[1]);
-        fprintf(fConfig, "M1 %d\n",minAtivacao[1]);
-        fprintf(fConfig, "H2 %d\n",horaAtivacao[2]);
-        fprintf(fConfig, "M2 %d\n",minAtivacao[2]);
-        fprintf(fConfig, "H3 %d\n",horaAtivacao[3]);
-        fprintf(fConfig, "M3 %d\n",minAtivacao[3]);
-        fprintf(fConfig, "H4 %d\n",horaAtivacao[4]);
-        fprintf(fConfig, "M4 %d\n",minAtivacao[4]);
-        fprintf(fConfig, "H5 %d\n",horaAtivacao[5]);
-        fprintf(fConfig, "M5 %d\n",minAtivacao[5]);
-        fprintf(fConfig, "H6 %d\n",horaAtivacao[6]);
-        fprintf(fConfig, "M6 %d\n",minAtivacao[6]);
-        fprintf(fConfig, "H7 %d\n",horaAtivacao[7]);
-        fprintf(fConfig, "M7 %d\n",minAtivacao[7]);
-        fprintf(fConfig, "H8 %d\n",horaAtivacao[8]);
-        fprintf(fConfig, "M8 %d\n",minAtivacao[8]);
-        fprintf(fConfig, "H9 %d\n",horaAtivacao[9]);
-        fprintf(fConfig, "M9 %d\n",minAtivacao[9]);
-        fprintf(fConfig, "TSM1 %d\n",timestampMarker[0]);
-        fprintf(fConfig, "TSM2 %d\n",timestampMarker[1]);
-        fprintf(fConfig, "TSM3 %d\n",timestampMarker[2]);
-        fprintf(fConfig, "TSM4 %d\n",timestampMarker[3]);
-        fprintf(fConfig, "TSM5 %d\n",timestampMarker[4]);
-        fprintf(fConfig, "TSM6 %d\n",timestampMarker[5]);
-        fprintf(fConfig, "TSM7 %d\n",timestampMarker[6]);
-        fprintf(fConfig, "TSM8 %d\n",timestampMarker[7]);
-        fprintf(fConfig, "TSM9 %d\n",timestampMarker[8]);
-        fprintf(fConfig, "TSM10 %d\n",timestampMarker[9]);
-        
-        fclose(fConfig);
-        ESP_LOGI(saveConfFile,"File saved successfully!");
-    }else{
-        ESP_LOGI(saveConfFile,"Could not write config file");
+    if(xSemaphoreTake(configFileSemaphore,t1s)){
+        fConfig = fopen(configFileName,"w");
+        if(fConfig != NULL){
+            fprintf(fConfig, "TA %f\n",tempAdeq);
+            fprintf(fConfig, "UA %f\n",umidAdeq);
+            fprintf(fConfig, "AM %f\n",altuMin);
+            fprintf(fConfig, "TAP %d\n",tempoAtivacaoProvisoria);
+            fprintf(fConfig, "TAT %d\n",tempoAtivaçãoTotal);
+            fprintf(fConfig, "TAQP %d\n",tempoAtivacaoQuePassou);
+            fprintf(fConfig, "CAR %d\n",contaAtivacaoRestante);
+            fprintf(fConfig, "UATSEC %d\n",ultimaAtivacao.tm_sec);
+            fprintf(fConfig, "UATMIN %d\n",ultimaAtivacao.tm_min);
+            fprintf(fConfig, "UATHOUR %d\n",ultimaAtivacao.tm_hour);
+            fprintf(fConfig, "UATMDAY %d\n",ultimaAtivacao.tm_mday);
+            fprintf(fConfig, "UATMON %d\n",ultimaAtivacao.tm_mon);
+            fprintf(fConfig, "UATYEAR %d\n",ultimaAtivacao.tm_year);
+            fprintf(fConfig, "UATWDAY %d\n",ultimaAtivacao.tm_wday);
+            fprintf(fConfig, "UATYDAY %d\n",ultimaAtivacao.tm_yday);
+            fprintf(fConfig, "UATISDST %d\n",ultimaAtivacao.tm_isdst);
+            fprintf(fConfig, "H0 %d\n",horaAtivacao[0]);
+            fprintf(fConfig, "M0 %d\n",minAtivacao[0]);
+            fprintf(fConfig, "H1 %d\n",horaAtivacao[1]);
+            fprintf(fConfig, "M1 %d\n",minAtivacao[1]);
+            fprintf(fConfig, "H2 %d\n",horaAtivacao[2]);
+            fprintf(fConfig, "M2 %d\n",minAtivacao[2]);
+            fprintf(fConfig, "H3 %d\n",horaAtivacao[3]);
+            fprintf(fConfig, "M3 %d\n",minAtivacao[3]);
+            fprintf(fConfig, "H4 %d\n",horaAtivacao[4]);
+            fprintf(fConfig, "M4 %d\n",minAtivacao[4]);
+            fprintf(fConfig, "H5 %d\n",horaAtivacao[5]);
+            fprintf(fConfig, "M5 %d\n",minAtivacao[5]);
+            fprintf(fConfig, "H6 %d\n",horaAtivacao[6]);
+            fprintf(fConfig, "M6 %d\n",minAtivacao[6]);
+            fprintf(fConfig, "H7 %d\n",horaAtivacao[7]);
+            fprintf(fConfig, "M7 %d\n",minAtivacao[7]);
+            fprintf(fConfig, "H8 %d\n",horaAtivacao[8]);
+            fprintf(fConfig, "M8 %d\n",minAtivacao[8]);
+            fprintf(fConfig, "H9 %d\n",horaAtivacao[9]);
+            fprintf(fConfig, "M9 %d\n",minAtivacao[9]);
+            fprintf(fConfig, "TSM1 %d\n",timestampMarker[0]);
+            fprintf(fConfig, "TSM2 %d\n",timestampMarker[1]);
+            fprintf(fConfig, "TSM3 %d\n",timestampMarker[2]);
+            fprintf(fConfig, "TSM4 %d\n",timestampMarker[3]);
+            fprintf(fConfig, "TSM5 %d\n",timestampMarker[4]);
+            fprintf(fConfig, "TSM6 %d\n",timestampMarker[5]);
+            fprintf(fConfig, "TSM7 %d\n",timestampMarker[6]);
+            fprintf(fConfig, "TSM8 %d\n",timestampMarker[7]);
+            fprintf(fConfig, "TSM9 %d\n",timestampMarker[8]);
+            fprintf(fConfig, "TSM10 %d\n",timestampMarker[9]);
+            
+            fclose(fConfig);
+            ESP_LOGI(saveConfFile,"File saved successfully!");
+        }else{
+            ESP_LOGI(saveConfFile,"Could not write config file");
+        }
+        xSemaphoreGive(configFileSemaphore);  
     }
+    
     
 }
 
@@ -526,9 +537,6 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
     float tempFloatVar;
     int tempIntVar;
     int tempQtdAtivacao = 0;
-    char message[20];
-
-    bool isConnected;
     //Log do MQTT para debug
     ESP_LOGD(MQTT5, "free heap size is %" PRIu32 ", minimum %" PRIu32, esp_get_free_heap_size(), esp_get_minimum_free_heap_size());
     
@@ -629,7 +637,8 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         ESP_LOGI(MQTT5, "content_type is %.*s", event->property->content_type_len, event->property->content_type);
         ESP_LOGI(MQTT5, "TOPIC=%.*s", event->topic_len, event->topic);
         ESP_LOGI(MQTT5, "DATA=%.*s", event->data_len, event->data);
-        if(xSemaphoreTake(configFileSemaphore, t1s)){
+        if(xSemaphoreTake(dallyControlValuesSemaphore, t1s)){
+
             if(sscanf(event->data, "%9s %9s", varTag, varValue) == 2){
                 
                 if(strcmp(varTag,"TA") == 0){
@@ -927,10 +936,10 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
             }else{
                 esp_mqtt_client_publish(client, topicoSYS, "Invalid value", 0, 2, 1);
             }
-
+          
             vSaveConfFile();
 
-            xSemaphoreGive(configFileSemaphore);
+            xSemaphoreGive(dallyControlValuesSemaphore);
         }
         break;
     
@@ -1385,546 +1394,549 @@ void vLoadingDefaultValues(){
     if(xSemaphoreTake(configFileSemaphore,t1s)){
         qtdAtivacao = 0;
         fConfig = fopen(configFileName, "r");
-        if(fConfig != NULL){
-            ESP_LOGI(loadingDefaultValues, "File opened successfully!");
-            while(fscanf(fConfig, "%9s %9s", varTag, varValue) == 2){
-                //-------------------TA-------------------
-                if(strcmp(varTag,"TA") == 0){
-                    tempAdeq = strtof(varValue, &endPtr);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load appropriate temperature, using default: 35");
-                        tempAdeq = temperaturaAdequadaPadrão;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded appropriate temperature value, successfully!");
+        if(xSemaphoreTake(dallyControlValuesSemaphore,t1s)){
+            if(fConfig != NULL){
+                ESP_LOGI(loadingDefaultValues, "File opened successfully!");
+                while(fscanf(fConfig, "%9s %9s", varTag, varValue) == 2){
+                    //-------------------TA-------------------
+                    if(strcmp(varTag,"TA") == 0){
+                        tempAdeq = strtof(varValue, &endPtr);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load appropriate temperature, using default: 35");
+                            tempAdeq = temperaturaAdequadaPadrão;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded appropriate temperature value, successfully!");
+                        }
+                    }
+                    //-------------------UA-------------------
+                    if(strcmp(varTag,"UA") == 0){
+                        umidAdeq = strtof(varValue, &endPtr);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load appropriate humidity, using default: 70");
+                            umidAdeq = umidadeAdequadaPadrão;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded appropriate humidity value, successfully!");
+                        }
+                    }
+                    //-------------------AM-------------------
+                    if(strcmp(varTag,"AM") == 0){
+                        altuMin = strtof(varValue, &endPtr);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load minimal water tank level, using default: 32.5");
+                            altuMin = alturaMinimaPadrão;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded minimal water tank level value, successfully!");
+                        }
+                    }
+                    //-------------------TAP-------------------
+                    if(strcmp(varTag,"TAP") == 0){
+                        tempoAtivacaoProvisoria = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load time for untimed water pump activation, using default: 1");
+                            tempoAtivacaoProvisoria = t1m;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded time for untimed water pump activation, successfully!");
+                        }
+                    }
+                    //-------------------TAT-------------------
+                    if(strcmp(varTag,"TAT") == 0){
+                        tempoAtivaçãoTotal = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load time for total timed activation, using default: 10");
+                            tempoAtivaçãoTotal = t10m;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded time for total timed activation, successfully!");
+                        }
+                    }
+                    //-------------------TAQP-------------------
+                    if(strcmp(varTag,"TAQP") == 0){
+                        tempoAtivacaoQuePassou = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed, using default: 0");
+                            tempoAtivacaoQuePassou = t10m;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed, successfully!");
+                        }
+                    }
+                    //-------------------CAR-------------------
+                    if(strcmp(varTag,"CAR") == 0){
+                        contaAtivacaoRestante = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load amount of activation times that are left, using default: 3");
+                            contaAtivacaoRestante = quantidadeAtivaçõesPadrão;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded amount of activation times that are left, successfully!");
+                        }
+                    }
+                    //-------------------UATSEC-------------------
+                    if(strcmp(varTag,"UATSEC") == 0){
+                        ultimaAtivacao.tm_sec = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (1/9), using current time");
+                            ultimaAtivacao.tm_sec = timeinfo.tm_sec;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (1/9), successfully!");
+                        }
+                    }
+                    //-------------------UATMIN-------------------
+                    if(strcmp(varTag,"UATMIN") == 0){
+                        ultimaAtivacao.tm_min = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (2/9), using current time");
+                            ultimaAtivacao.tm_min = timeinfo.tm_min;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (2/9), successfully!");
+                        }
+                    }
+                    //-------------------UATHOUR-------------------
+                    if(strcmp(varTag,"UATHOUR") == 0){
+                        ultimaAtivacao.tm_hour = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (3/9), using current time");
+                            ultimaAtivacao.tm_hour = timeinfo.tm_hour;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (3/9), successfully!");
+                        }
+                    }
+                    //-------------------UATMDAY-------------------
+                    if(strcmp(varTag,"UATMDAY") == 0){
+                        ultimaAtivacao.tm_mday = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (4/9), using current time");
+                            ultimaAtivacao.tm_mday = timeinfo.tm_mday;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (4/9), successfully!");
+                        }
+                    }
+                    //-------------------UATMON-------------------
+                    if(strcmp(varTag,"UATMON") == 0){
+                        ultimaAtivacao.tm_mon = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (5/9), using current time");
+                            ultimaAtivacao.tm_mon = timeinfo.tm_mon;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (5/9), successfully!");
+                        }
+                    }
+                    //-------------------UATYEAR-------------------
+                    if(strcmp(varTag,"UATYEAR") == 0){
+                        ultimaAtivacao.tm_year = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (6/9), using current time");
+                            ultimaAtivacao.tm_year = timeinfo.tm_year;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (6/9), successfully!");
+                        }
+                    }
+                    //-------------------UATWDAY-------------------
+                    if(strcmp(varTag,"UATWDAY") == 0){
+                        ultimaAtivacao.tm_wday = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (7/9), using current time");
+                            ultimaAtivacao.tm_wday = timeinfo.tm_wday;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (7/9), successfully!");
+                        }
+                    }
+                    //-------------------UATYDAY-------------------
+                    if(strcmp(varTag,"UATYDAY") == 0){
+                        ultimaAtivacao.tm_yday = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (8/9), using current time");
+                            ultimaAtivacao.tm_yday = timeinfo.tm_yday;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (8/9), successfully!");
+                        }
+                    }
+                    //-------------------UATISDST-------------------
+                    if(strcmp(varTag,"UATISDST") == 0){
+                        ultimaAtivacao.tm_isdst = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (9/9), using current time");
+                            ultimaAtivacao.tm_isdst = timeinfo.tm_isdst;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (9/9), successfully!");
+                        }
+                    }
+                    //-------------------H0-------------------
+                    if(strcmp(varTag,"H0") == 0){
+                        horaAtivacao[0] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time H 1/10, using current time, using default: 7");
+                            horaAtivacao[0] = timeHour1;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time H 1/10, successfully!");
+                        }
+                        if(horaAtivacao[0] != 24){
+                            ++qtdAtivacao;
+                        }
+                    }
+                    //-------------------M0-------------------
+                    if(strcmp(varTag,"M0") == 0){
+                        minAtivacao[0] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time M 1/10, using current time, using default: 30");
+                            minAtivacao[0] = timeMin1;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time M 1/10, successfully!");
+                        }
+                    }
+                    //-------------------H1-------------------
+                    if(strcmp(varTag,"H1") == 0){
+                        horaAtivacao[1] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time H 2/10, using current time, using default: 12");
+                            horaAtivacao[1] = timeHour2;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time H 2/10, successfully!");
+                        }
+                        if(horaAtivacao[1] != 24){
+                            ++qtdAtivacao;
+                        }
+                    }
+                    //-------------------M1-------------------
+                    if(strcmp(varTag,"M1") == 0){
+                        minAtivacao[1] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time M 2/10, using current time, using default: 0");
+                            minAtivacao[1] = timeMin2;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time M 2/10, successfully!");
+                        }
+                    }
+                    //-------------------H2-------------------
+                    if(strcmp(varTag,"H2") == 0){
+                        horaAtivacao[2] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time H 3/10, using current time, using default: 18");
+                            horaAtivacao[2] = timeHour3;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time H 3/10, successfully!");
+                        }
+                        if(horaAtivacao[2] != 24){
+                            ++qtdAtivacao;
+                        }
+                    }
+                    //-------------------M2-------------------
+                    if(strcmp(varTag,"M2") == 0){
+                        minAtivacao[2] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time M 3/10, using current time, using default: 30");
+                            minAtivacao[2] = timeMin3;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time M 3/10, successfully!");
+                        }
+                    }
+                    //-------------------H3-------------------
+                    if(strcmp(varTag,"H3") == 0){
+                        horaAtivacao[3] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time H 4/10, using current time, using default: 24");
+                            horaAtivacao[3] = timeHourNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time H 4/10, successfully!");
+                        }
+                        if(horaAtivacao[3] != 24){
+                            ++qtdAtivacao;
+                        }
+                    }
+                    //-------------------M3-------------------
+                    if(strcmp(varTag,"M3") == 0){
+                        minAtivacao[3] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time M 4/10, using current time, using default: 60");
+                            minAtivacao[3] = timeMinNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time M 4/10, successfully!");
+                        }
+                    }
+                    //-------------------H4-------------------
+                    if(strcmp(varTag,"H4") == 0){
+                        horaAtivacao[4] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time H 5/10, using current time, using default: 24");
+                            horaAtivacao[4] = timeHourNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time H 5/10, successfully!");
+                        }
+                        if(horaAtivacao[4] != 24){
+                            ++qtdAtivacao;
+                        }
+                    }
+                    //-------------------M4-------------------
+                    if(strcmp(varTag,"M4") == 0){
+                        minAtivacao[4] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time M 5/10, using current time, using default: 60");
+                            minAtivacao[4] = timeMinNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time M 5/10, successfully!");
+                        }
+                    }
+                    //-------------------H5-------------------
+                    if(strcmp(varTag,"H5") == 0){
+                        horaAtivacao[5] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time H 6/10, using current time, using default: 24");
+                            horaAtivacao[5] = timeHourNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time H 6/10, successfully!");
+                        }
+                        if(horaAtivacao[5] != 24){
+                            ++qtdAtivacao;
+                        }
+                    }
+                    //-------------------M5-------------------
+                    if(strcmp(varTag,"M5") == 0){
+                        minAtivacao[5] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time M 6/10, using current time, using default: 60");
+                            minAtivacao[5] = timeMinNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time M 6/10, successfully!");
+                        }
+                    }
+                    //-------------------H6-------------------
+                    if(strcmp(varTag,"H6") == 0){
+                        horaAtivacao[6] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time H 7/10, using current time, using default: 24");
+                            horaAtivacao[6] = timeHourNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time H 7/10, successfully!");
+                        }
+                        if(horaAtivacao[6] != 24){
+                            ++qtdAtivacao;
+                        }
+                    }
+                    //-------------------M6-------------------
+                    if(strcmp(varTag,"M6") == 0){
+                        minAtivacao[6] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time M 7/10, using current time, using default: 60");
+                            minAtivacao[6] = timeMinNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time M 7/10, successfully!");
+                        }
+                    }
+                    //-------------------H7-------------------
+                    if(strcmp(varTag,"H7") == 0){
+                        horaAtivacao[7] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time H 8/10, using current time, using default: 24");
+                            horaAtivacao[7] = timeHourNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time H 8/10, successfully!");
+                        }
+                        if(horaAtivacao[7] != 24){
+                            ++qtdAtivacao;
+                        }
+                    }
+                    //-------------------M7-------------------
+                    if(strcmp(varTag,"M7") == 0){
+                        minAtivacao[7] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time M 8/10, using current time, using default: 60");
+                            minAtivacao[7] = timeMinNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time M 8/10, successfully!");
+                        }
+                    }
+                    //-------------------H8-------------------
+                    if(strcmp(varTag,"H8") == 0){
+                        horaAtivacao[8] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time H 9/10, using current time, using default: 24");
+                            horaAtivacao[8] = timeHourNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time H 9/10, successfully!");
+                        }
+                        if(horaAtivacao[8] != 24){
+                            ++qtdAtivacao;
+                        }
+                    }
+                    //-------------------M8-------------------
+                    if(strcmp(varTag,"M8") == 0){
+                        minAtivacao[8] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time M 9/10, using current time, using default: 60");
+                            minAtivacao[8] = timeMinNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time M 9/10, successfully!");
+                        }
+                    }
+                    //-------------------H9-------------------
+                    if(strcmp(varTag,"H9") == 0){
+                        horaAtivacao[9] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time H 10/10, using current time, using default: 24");
+                            horaAtivacao[9] = timeHourNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time H 10/10, successfully!");
+                        }
+                        if(horaAtivacao[9] != 24){
+                            ++qtdAtivacao;
+                        }
+                    }
+                    //-------------------M9-------------------
+                    if(strcmp(varTag,"M9") == 0){
+                        minAtivacao[9] = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load activation time M 10/10, using current time, using default: 60");
+                            minAtivacao[9] = timeMinNotConf;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded activation time M 10/10, successfully!");
+                        }
+                    }
+                    //-------------------TSM1-------------------
+                    if(strcmp(varTag,"TSM1") == 0){
+                        timestampMarker[0] = (bool) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 1 value, using default: false");
+                            timestampMarker[0] = false;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 1 value, successfully!");
+                        }
+                    }
+                    //-------------------TSM2-------------------
+                    if(strcmp(varTag,"TSM2") == 0){
+                        timestampMarker[1] = (bool) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 2 value, using default: false");
+                            timestampMarker[1] = false;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 2 value, successfully!");
+                        }
+                    }
+                    //-------------------TSM3-------------------
+                    if(strcmp(varTag,"TSM3") == 0){
+                        timestampMarker[2] = (bool) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 3 value, using default: false");
+                            timestampMarker[2] = false;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 3 value, successfully!");
+                        }
+                    }
+                    //-------------------TSM4-------------------
+                    if(strcmp(varTag,"TSM4") == 0){
+                        timestampMarker[3] = (bool) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 4 value, using default: false");
+                            timestampMarker[3] = false;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 4 value, successfully!");
+                        }
+                    }
+                    //-------------------TSM5-------------------
+                    if(strcmp(varTag,"TSM5") == 0){
+                        timestampMarker[4] = (bool) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 5 value, using default: false");
+                            timestampMarker[4] = false;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 5 value, successfully!");
+                        }
+                    }
+                    //-------------------TSM6-------------------
+                    if(strcmp(varTag,"TSM6") == 0){
+                        timestampMarker[5] = (bool) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 6 value, using default: false");
+                            timestampMarker[5] = false;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 6 value, successfully!");
+                        }
+                    }
+                    //-------------------TSM7-------------------
+                    if(strcmp(varTag,"TSM7") == 0){
+                        timestampMarker[6] = (bool) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 7 value, using default: false");
+                            timestampMarker[6] = false;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 7 value, successfully!");
+                        }
+                    }
+                    //-------------------TSM8-------------------
+                    if(strcmp(varTag,"TSM8") == 0){
+                        timestampMarker[7] = (bool) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 8 value, using default: false");
+                            timestampMarker[7] = false;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 8 value, successfully!");
+                        }
+                    }
+                    //-------------------TSM9-------------------
+                    if(strcmp(varTag,"TSM9") == 0){
+                        timestampMarker[8] = (bool) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 9 value, using default: false");
+                            timestampMarker[8] = false;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 9 value, successfully!");
+                        }
+                    }
+                    //-------------------TSM10-------------------
+                    if(strcmp(varTag,"TSM10") == 0){
+                        timestampMarker[9] = (bool) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 9 value, using default: false");
+                            timestampMarker[9] = false;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 9 value, successfully!");
+                        }
                     }
                 }
-                //-------------------UA-------------------
-                if(strcmp(varTag,"UA") == 0){
-                    umidAdeq = strtof(varValue, &endPtr);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load appropriate humidity, using default: 70");
-                        umidAdeq = umidadeAdequadaPadrão;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded appropriate humidity value, successfully!");
-                    }
-                }
-                //-------------------AM-------------------
-                if(strcmp(varTag,"AM") == 0){
-                    altuMin = strtof(varValue, &endPtr);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load minimal water tank level, using default: 32.5");
-                        altuMin = alturaMinimaPadrão;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded minimal water tank level value, successfully!");
-                    }
-                }
-                //-------------------TAP-------------------
-                if(strcmp(varTag,"TAP") == 0){
-                    tempoAtivacaoProvisoria = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load time for untimed water pump activation, using default: 1");
-                        tempoAtivacaoProvisoria = t1m;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded time for untimed water pump activation, successfully!");
-                    }
-                }
-                //-------------------TAT-------------------
-                if(strcmp(varTag,"TAT") == 0){
-                    tempoAtivaçãoTotal = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load time for total timed activation, using default: 10");
-                        tempoAtivaçãoTotal = t10m;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded time for total timed activation, successfully!");
-                    }
-                }
-                //-------------------TAQP-------------------
-                if(strcmp(varTag,"TAQP") == 0){
-                    tempoAtivacaoQuePassou = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed, using default: 0");
-                        tempoAtivacaoQuePassou = t10m;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed, successfully!");
-                    }
-                }
-                //-------------------CAR-------------------
-                if(strcmp(varTag,"CAR") == 0){
-                    contaAtivacaoRestante = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load amount of activation times that are left, using default: 3");
-                        contaAtivacaoRestante = quantidadeAtivaçõesPadrão;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded amount of activation times that are left, successfully!");
-                    }
-                }
-                //-------------------UATSEC-------------------
-                if(strcmp(varTag,"UATSEC") == 0){
-                    ultimaAtivacao.tm_sec = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (1/9), using current time");
-                        ultimaAtivacao.tm_sec = timeinfo.tm_sec;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (1/9), successfully!");
-                    }
-                }
-                //-------------------UATMIN-------------------
-                if(strcmp(varTag,"UATMIN") == 0){
-                    ultimaAtivacao.tm_min = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (2/9), using current time");
-                        ultimaAtivacao.tm_min = timeinfo.tm_min;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (2/9), successfully!");
-                    }
-                }
-                //-------------------UATHOUR-------------------
-                if(strcmp(varTag,"UATHOUR") == 0){
-                    ultimaAtivacao.tm_hour = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (3/9), using current time");
-                        ultimaAtivacao.tm_hour = timeinfo.tm_hour;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (3/9), successfully!");
-                    }
-                }
-                //-------------------UATMDAY-------------------
-                if(strcmp(varTag,"UATMDAY") == 0){
-                    ultimaAtivacao.tm_mday = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (4/9), using current time");
-                        ultimaAtivacao.tm_mday = timeinfo.tm_mday;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (4/9), successfully!");
-                    }
-                }
-                //-------------------UATMON-------------------
-                if(strcmp(varTag,"UATMON") == 0){
-                    ultimaAtivacao.tm_mon = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (5/9), using current time");
-                        ultimaAtivacao.tm_mon = timeinfo.tm_mon;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (5/9), successfully!");
-                    }
-                }
-                //-------------------UATYEAR-------------------
-                if(strcmp(varTag,"UATYEAR") == 0){
-                    ultimaAtivacao.tm_year = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (6/9), using current time");
-                        ultimaAtivacao.tm_year = timeinfo.tm_year;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (6/9), successfully!");
-                    }
-                }
-                //-------------------UATWDAY-------------------
-                if(strcmp(varTag,"UATWDAY") == 0){
-                    ultimaAtivacao.tm_wday = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (7/9), using current time");
-                        ultimaAtivacao.tm_wday = timeinfo.tm_wday;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (7/9), successfully!");
-                    }
-                }
-                //-------------------UATYDAY-------------------
-                if(strcmp(varTag,"UATYDAY") == 0){
-                    ultimaAtivacao.tm_yday = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (8/9), using current time");
-                        ultimaAtivacao.tm_yday = timeinfo.tm_yday;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (8/9), successfully!");
-                    }
-                }
-                //-------------------UATISDST-------------------
-                if(strcmp(varTag,"UATISDST") == 0){
-                    ultimaAtivacao.tm_isdst = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load active time that has already passed (9/9), using current time");
-                        ultimaAtivacao.tm_isdst = timeinfo.tm_isdst;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded active time that has already passed (9/9), successfully!");
-                    }
-                }
-                //-------------------H0-------------------
-                if(strcmp(varTag,"H0") == 0){
-                    horaAtivacao[0] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time H 1/10, using current time, using default: 7");
-                        horaAtivacao[0] = timeHour1;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time H 1/10, successfully!");
-                    }
-                    if(horaAtivacao[0] != 24){
-                        ++qtdAtivacao;
-                    }
-                }
-                //-------------------M0-------------------
-                if(strcmp(varTag,"M0") == 0){
-                    minAtivacao[0] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time M 1/10, using current time, using default: 30");
-                        minAtivacao[0] = timeMin1;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time M 1/10, successfully!");
-                    }
-                }
-                //-------------------H1-------------------
-                if(strcmp(varTag,"H1") == 0){
-                    horaAtivacao[1] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time H 2/10, using current time, using default: 12");
-                        horaAtivacao[1] = timeHour2;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time H 2/10, successfully!");
-                    }
-                    if(horaAtivacao[1] != 24){
-                        ++qtdAtivacao;
-                    }
-                }
-                //-------------------M1-------------------
-                if(strcmp(varTag,"M1") == 0){
-                    minAtivacao[1] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time M 2/10, using current time, using default: 0");
-                        minAtivacao[1] = timeMin2;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time M 2/10, successfully!");
-                    }
-                }
-                //-------------------H2-------------------
-                if(strcmp(varTag,"H2") == 0){
-                    horaAtivacao[2] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time H 3/10, using current time, using default: 18");
-                        horaAtivacao[2] = timeHour3;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time H 3/10, successfully!");
-                    }
-                    if(horaAtivacao[2] != 24){
-                        ++qtdAtivacao;
-                    }
-                }
-                //-------------------M2-------------------
-                if(strcmp(varTag,"M2") == 0){
-                    minAtivacao[2] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time M 3/10, using current time, using default: 30");
-                        minAtivacao[2] = timeMin3;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time M 3/10, successfully!");
-                    }
-                }
-                //-------------------H3-------------------
-                if(strcmp(varTag,"H3") == 0){
-                    horaAtivacao[3] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time H 4/10, using current time, using default: 24");
-                        horaAtivacao[3] = timeHourNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time H 4/10, successfully!");
-                    }
-                    if(horaAtivacao[3] != 24){
-                        ++qtdAtivacao;
-                    }
-                }
-                //-------------------M3-------------------
-                if(strcmp(varTag,"M3") == 0){
-                    minAtivacao[3] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time M 4/10, using current time, using default: 60");
-                        minAtivacao[3] = timeMinNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time M 4/10, successfully!");
-                    }
-                }
-                //-------------------H4-------------------
-                if(strcmp(varTag,"H4") == 0){
-                    horaAtivacao[4] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time H 5/10, using current time, using default: 24");
-                        horaAtivacao[4] = timeHourNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time H 5/10, successfully!");
-                    }
-                    if(horaAtivacao[4] != 24){
-                        ++qtdAtivacao;
-                    }
-                }
-                //-------------------M4-------------------
-                if(strcmp(varTag,"M4") == 0){
-                    minAtivacao[4] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time M 5/10, using current time, using default: 60");
-                        minAtivacao[4] = timeMinNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time M 5/10, successfully!");
-                    }
-                }
-                //-------------------H5-------------------
-                if(strcmp(varTag,"H5") == 0){
-                    horaAtivacao[5] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time H 6/10, using current time, using default: 24");
-                        horaAtivacao[5] = timeHourNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time H 6/10, successfully!");
-                    }
-                    if(horaAtivacao[5] != 24){
-                        ++qtdAtivacao;
-                    }
-                }
-                //-------------------M5-------------------
-                if(strcmp(varTag,"M5") == 0){
-                    minAtivacao[5] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time M 6/10, using current time, using default: 60");
-                        minAtivacao[5] = timeMinNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time M 6/10, successfully!");
-                    }
-                }
-                //-------------------H6-------------------
-                if(strcmp(varTag,"H6") == 0){
-                    horaAtivacao[6] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time H 7/10, using current time, using default: 24");
-                        horaAtivacao[6] = timeHourNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time H 7/10, successfully!");
-                    }
-                    if(horaAtivacao[6] != 24){
-                        ++qtdAtivacao;
-                    }
-                }
-                //-------------------M6-------------------
-                if(strcmp(varTag,"M6") == 0){
-                    minAtivacao[6] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time M 7/10, using current time, using default: 60");
-                        minAtivacao[6] = timeMinNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time M 7/10, successfully!");
-                    }
-                }
-                //-------------------H7-------------------
-                if(strcmp(varTag,"H7") == 0){
-                    horaAtivacao[7] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time H 8/10, using current time, using default: 24");
-                        horaAtivacao[7] = timeHourNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time H 8/10, successfully!");
-                    }
-                    if(horaAtivacao[7] != 24){
-                        ++qtdAtivacao;
-                    }
-                }
-                //-------------------M7-------------------
-                if(strcmp(varTag,"M7") == 0){
-                    minAtivacao[7] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time M 8/10, using current time, using default: 60");
-                        minAtivacao[7] = timeMinNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time M 8/10, successfully!");
-                    }
-                }
-                //-------------------H8-------------------
-                if(strcmp(varTag,"H8") == 0){
-                    horaAtivacao[8] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time H 9/10, using current time, using default: 24");
-                        horaAtivacao[8] = timeHourNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time H 9/10, successfully!");
-                    }
-                    if(horaAtivacao[8] != 24){
-                        ++qtdAtivacao;
-                    }
-                }
-                //-------------------M8-------------------
-                if(strcmp(varTag,"M8") == 0){
-                    minAtivacao[8] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time M 9/10, using current time, using default: 60");
-                        minAtivacao[8] = timeMinNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time M 9/10, successfully!");
-                    }
-                }
-                //-------------------H9-------------------
-                if(strcmp(varTag,"H9") == 0){
-                    horaAtivacao[9] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time H 10/10, using current time, using default: 24");
-                        horaAtivacao[9] = timeHourNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time H 10/10, successfully!");
-                    }
-                    if(horaAtivacao[9] != 24){
-                        ++qtdAtivacao;
-                    }
-                }
-                //-------------------M9-------------------
-                if(strcmp(varTag,"M9") == 0){
-                    minAtivacao[9] = (int) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load activation time M 10/10, using current time, using default: 60");
-                        minAtivacao[9] = timeMinNotConf;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded activation time M 10/10, successfully!");
-                    }
-                }
-                //-------------------TSM1-------------------
-                if(strcmp(varTag,"TSM1") == 0){
-                    timestampMarker[0] = (bool) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 1 value, using default: false");
-                        timestampMarker[0] = false;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 1 value, successfully!");
-                    }
-                }
-                //-------------------TSM2-------------------
-                if(strcmp(varTag,"TSM2") == 0){
-                    timestampMarker[1] = (bool) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 2 value, using default: false");
-                        timestampMarker[1] = false;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 2 value, successfully!");
-                    }
-                }
-                //-------------------TSM3-------------------
-                if(strcmp(varTag,"TSM3") == 0){
-                    timestampMarker[2] = (bool) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 3 value, using default: false");
-                        timestampMarker[2] = false;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 3 value, successfully!");
-                    }
-                }
-                //-------------------TSM4-------------------
-                if(strcmp(varTag,"TSM4") == 0){
-                    timestampMarker[3] = (bool) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 4 value, using default: false");
-                        timestampMarker[3] = false;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 4 value, successfully!");
-                    }
-                }
-                //-------------------TSM5-------------------
-                if(strcmp(varTag,"TSM5") == 0){
-                    timestampMarker[4] = (bool) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 5 value, using default: false");
-                        timestampMarker[4] = false;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 5 value, successfully!");
-                    }
-                }
-                //-------------------TSM6-------------------
-                if(strcmp(varTag,"TSM6") == 0){
-                    timestampMarker[5] = (bool) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 6 value, using default: false");
-                        timestampMarker[5] = false;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 6 value, successfully!");
-                    }
-                }
-                //-------------------TSM7-------------------
-                if(strcmp(varTag,"TSM7") == 0){
-                    timestampMarker[6] = (bool) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 7 value, using default: false");
-                        timestampMarker[6] = false;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 7 value, successfully!");
-                    }
-                }
-                //-------------------TSM8-------------------
-                if(strcmp(varTag,"TSM8") == 0){
-                    timestampMarker[7] = (bool) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 8 value, using default: false");
-                        timestampMarker[7] = false;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 8 value, successfully!");
-                    }
-                }
-                //-------------------TSM9-------------------
-                if(strcmp(varTag,"TSM9") == 0){
-                    timestampMarker[8] = (bool) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 9 value, using default: false");
-                        timestampMarker[8] = false;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 9 value, successfully!");
-                    }
-                }
-                //-------------------TSM10-------------------
-                if(strcmp(varTag,"TSM10") == 0){
-                    timestampMarker[9] = (bool) strtol(varValue, &endPtr, 10);
-                    if(varValue == endPtr){
-                        ESP_LOGI(loadingDefaultValues, "Could not load timestamp marker 9 value, using default: false");
-                        timestampMarker[9] = false;
-                    }else{
-                        ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 9 value, successfully!");
-                    }
-                }
-            }
-            fclose(fConfig);
-            ESP_LOGI(loadingDefaultValues,"Calculating activation time per period");
+                fclose(fConfig);
+                ESP_LOGI(loadingDefaultValues,"Calculating activation time per period");
 
-            tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
-        }else{
-            ESP_LOGI(loadingDefaultValues, "Could not open config file, loading default values");
-            
-            //Carrega valores padrão para varificar o estado do vaso
-            tempAdeq = temperaturaAdequadaPadrão;
-            umidAdeq = umidadeAdequadaPadrão;
-            altuMin = alturaMinimaPadrão;
-
-            //Carrega os valores padrões de tempo 
-            qtdAtivacao = quantidadeAtivaçõesPadrão;
-            tempoAtivacaoProvisoria = t1m;
-            tempoAtivaçãoTotal = t10m;
-            tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/qtdAtivacao;
-            contaAtivacaoRestante = qtdAtivacao; 
-            tempoAtivacaoQuePassou = 0;
-            
-            ultimaAtivacao = timeinfo;
-
-            for(int i = 0; i < quantidadeAtivaçõesMaxima; i++){
-                switch (i)
-                {
-                case 0:
-                    horaAtivacao[i] = timeHour1;
-                    minAtivacao[i] = timeMin1;
-                    break;
-
-                case 1:
-                    horaAtivacao[i] = timeHour2;
-                    minAtivacao[i] = timeMin2;
-                    break;
-
-                case 2:
-                    horaAtivacao[i] = timeHour3;
-                    minAtivacao[i] = timeMin3;
-                    break;
+                tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
+            }else{
+                ESP_LOGI(loadingDefaultValues, "Could not open config file, loading default values");
                 
-                default:
-                    horaAtivacao[i] = timeHourNotConf;
-                    minAtivacao[i] = timeMinNotConf;
-                    break;
+                //Carrega valores padrão para varificar o estado do vaso
+                tempAdeq = temperaturaAdequadaPadrão;
+                umidAdeq = umidadeAdequadaPadrão;
+                altuMin = alturaMinimaPadrão;
+
+                //Carrega os valores padrões de tempo 
+                qtdAtivacao = quantidadeAtivaçõesPadrão;
+                tempoAtivacaoProvisoria = t1m;
+                tempoAtivaçãoTotal = t10m;
+                tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/qtdAtivacao;
+                contaAtivacaoRestante = qtdAtivacao; 
+                tempoAtivacaoQuePassou = 0;
+                
+                ultimaAtivacao = timeinfo;
+
+                for(int i = 0; i < quantidadeAtivaçõesMaxima; i++){
+                    switch (i)
+                    {
+                    case 0:
+                        horaAtivacao[i] = timeHour1;
+                        minAtivacao[i] = timeMin1;
+                        break;
+
+                    case 1:
+                        horaAtivacao[i] = timeHour2;
+                        minAtivacao[i] = timeMin2;
+                        break;
+
+                    case 2:
+                        horaAtivacao[i] = timeHour3;
+                        minAtivacao[i] = timeMin3;
+                        break;
+                    
+                    default:
+                        horaAtivacao[i] = timeHourNotConf;
+                        minAtivacao[i] = timeMinNotConf;
+                        break;
+                    }
                 }
             }
+            xSemaphoreGive(dallyControlValuesSemaphore);
         }
         xSemaphoreGive(configFileSemaphore);
     }
@@ -1937,6 +1949,7 @@ void vDallyReset( void * pvParameters );
 void vSensorValues( void * pvParameters );
 void vProcessosMqtt( void * pvParameters );
 void vSaveSystemData( void * pvParameters );
+void vSleepSetup( void * pvParameters );
 
 void app_main(void){
     //Logs do Sistema
@@ -1978,6 +1991,8 @@ void app_main(void){
             break;
         }
     }
+
+    bombaDagua = BOMBA_DESLIGADA;
 
     //Cria fila de caracteres
     sensor_LDR_queue_handle = xQueueCreate( queueSize, messageSize);
@@ -2050,6 +2065,7 @@ void app_main(void){
     xHandleProcessosMqtt = NULL;
     xHandleDallyReset = NULL;
     xHandleSaveSystemData = NULL;
+    xHandleSleepSetup = NULL;
 
     char strftime_buf[64];
     // Definindo timezone para o horário padrão de Brazília (UTC+3)
@@ -2064,12 +2080,95 @@ void app_main(void){
     xTaskCreatePinnedToCore(&vDecision, "decision", STACK_SIZE_DECISION, ( void * ) 1, 4, &xHandleDecision, 0);
     xTaskCreatePinnedToCore(&vProcessosMqtt, "processosMqtt", STACK_SIZE_PROCESSOS_MQTT, ( void * ) 1, 5, &xHandleProcessosMqtt, 1);
     xTaskCreatePinnedToCore(&vSaveSystemData, "saveSystemData", STACK_SIZE_PROCESSOS_MQTT, ( void * ) 1, 4, &xHandleSaveSystemData, 1);
-    xTaskCreate(&vDallyReset, "dallyReset", STACK_SIZE_DALLY_RESET, ( void * ) 1, 4, &xHandleDallyReset);
+    xTaskCreate(&vDallyReset, "dallyReset", STACK_SIZE_DALLY_RESET, ( void * ) 1, 3, &xHandleDallyReset);
+    xTaskCreate(&vSleepSetup, "sleepSetup", STACK_SIZE_DALLY_RESET, ( void * ) 1, 3, &xHandleSleepSetup);
 
 }
 
 //_____________________________IMPLEMENTAÇÃO_DAS_TAREFAS_DO_RTOS_____________________________
 
+void vSleepSetup( void * pvParameters ){
+    //Função que vai colocar o sistema para dormir
+    bool queueStatus = false;
+    
+    //Variáveis de tempo
+    time_t tempoAgora;
+    struct tm timeinfo;
+    struct tm nextTime;
+    uint64_t timeInMs = 0;
+    while(1){    
+        vTaskDelay(t90s);
+        //Pegando o tempo atual
+        time(&tempoAgora);
+        setenv("TZ", "UTC+3", 1);
+        tzset();
+        localtime_r(&tempoAgora, &timeinfo);
+        nextTime = timeinfo;
+
+        ESP_LOGI(sleepSetup,"Starting Sleep setup...");
+        if(xSemaphoreTake(dataFileSemaphore, t1s) == pdTRUE){
+            ESP_LOGI(sleepSetup,"Not writing data file, OK");
+            if(xSemaphoreTake(configFileSemaphore, t1s) == pdTRUE){
+                ESP_LOGI(sleepSetup,"Not writing config file, OK");
+                if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
+                    ESP_LOGI(sleepSetup,"Not manipulating control values, OK");
+                    if(xSemaphoreTake(sensorValuesSemaphore, t1s) == pdTRUE){
+                        ESP_LOGI(sleepSetup,"Not reading sensor values, OK");
+                        if(bombaDagua == BOMBA_DESLIGADA){
+                            ESP_LOGI(sleepSetup,"Water Pump is turned off, OK");
+                            
+                            ESP_LOGI(sleepSetup,"Checking queues status...");
+                            queueStatus = 0 == uxQueueMessagesWaiting(sensor_LDR_queue_handle);
+                            queueStatus = queueStatus && 0 == uxQueueMessagesWaiting(sensor_THR_queue_handle);
+                            queueStatus = queueStatus && 0 == uxQueueMessagesWaiting(sensor_SHR_queue_handle);
+                            queueStatus = queueStatus && 0 == uxQueueMessagesWaiting(sensor_UTS_queue_handle);
+                            queueStatus = queueStatus && 0 == uxQueueMessagesWaiting(funcionamento_WPM_queue_handle);
+                            if(queueStatus){
+                                ESP_LOGI(sleepSetup, "No messages left on queue. OK");
+                                ESP_LOGI(sleepSetup,"Falling asleep");
+                                for(int i = 1; i<=5 ; i++){
+                                    if(timeinfo.tm_min+i == 60){
+                                        nextTime.tm_min = 0;
+                                        nextTime.tm_sec = 0;
+                                        timeInMs = (60-timeinfo.tm_sec)*1000000;
+                                        break;
+                                    }
+                                    if((timeinfo.tm_min+i)%5 == 0){
+                                        nextTime.tm_min = timeinfo.tm_min+i;
+                                        nextTime.tm_sec = 0;
+                                        timeInMs = ((nextTime.tm_min - timeinfo.tm_min)*60 -timeinfo.tm_sec)*1000000;
+                                        break;
+                                    }
+                                }
+                                
+                                esp_sleep_enable_timer_wakeup(timeInMs);
+                                esp_deep_sleep_start();
+                            }else{
+                                ESP_LOGI(sleepSetup,"There are still untreated messages left on queue. Failed to fall asleep");
+                            }
+                        }else{
+                            ESP_LOGI(sleepSetup,"Water Pump is turned on. Failed to fall asleep");
+                        }
+                        xSemaphoreGive(sensorValuesSemaphore);
+                    }else{
+                        ESP_LOGI(sleepSetup,"Reading sensor values. Failed to fall asleep");
+                    }
+                    xSemaphoreGive(dallyControlValuesSemaphore);
+                }else{
+                    ESP_LOGI(sleepSetup,"Manipulating control values. Failed to fall asleep");
+                }
+                xSemaphoreGive(configFileSemaphore);
+            }else{
+                ESP_LOGI(sleepSetup,"Writing config file. Failed to fall asleep");
+            }
+            xSemaphoreGive(dataFileSemaphore);
+        }else{
+            ESP_LOGI(sleepSetup,"Writing data file. Failed to fall asleep");
+        }
+
+
+    }
+}
 
 void vSaveSystemData(void * pvParameters){
 
@@ -2147,7 +2246,7 @@ void vSaveSystemData(void * pvParameters){
             }
             
         }
-        vTaskDelay(t10s);
+        vTaskDelay(t60s);
     }
 }
 //_______TAREFA_QUE_É_RESPONSÁVEL_PELO_FUNCIONAMENTO_DA_BOMBA_______
@@ -2161,7 +2260,6 @@ void vDecision( void * pvParameters ){
     float altura = 0.0f;    //Variável que salva o valor da altura da culuna d'agua
 
     bool comTimer = 0;  //Variável que controla quando a bomba foi ativada com ou sem timer
-    water_pump_state bombaDagua = BOMBA_DESLIGADA;  //Controla o estado da bomba
     
     bool condicaoAtivacao[quantidadeAtivaçõesMaxima] = {0}; //Verifica se chegou na condição de ativação
     bool ativou = 0; //Indica para o sistema que ele chegou a uma das condições de ativação
@@ -2185,31 +2283,30 @@ void vDecision( void * pvParameters ){
 
     while(1){
         
-        if(xSemaphoreTake(configFileSemaphore,t1s) == pdTRUE){
-            //Pegando o tempo atual
-            time(&tempoAgora);
-            setenv("TZ", "UTC+3", 1);
-            tzset();
-            localtime_r(&tempoAgora, &timeinfo);
-            //Se a última ativação não tiver sido definido, defina como igual ao tempo atual, só na primeira vez.
-            if(ultimaAtivacao.tm_year < 100){
-                ultimaAtivacao = timeinfo;
-            }
+        //Pegando o tempo atual
+        time(&tempoAgora);
+        setenv("TZ", "UTC+3", 1);
+        tzset();
+        localtime_r(&tempoAgora, &timeinfo);
+        //Se a última ativação não tiver sido definido, defina como igual ao tempo atual, só na primeira vez.
+        if(ultimaAtivacao.tm_year < 100){
+            ultimaAtivacao = timeinfo;
+        }
 
-            //Pega o semáforo para calcular a média de temperaturas
-            if(xSemaphoreTake(sensorValuesSemaphore, t1s) == pdTRUE){
-                ESP_LOGI(decision,"Calculating avarage temperature and getting sensor values");
-                //Pega a temperatura média dos quatro sensores de temperatura
-                temperaturaMedia = (thr_tem[0] + thr_tem[1] + thr_tem[2] + thr_tem[3])/4;
-                umidade = shr_pct;
-                altura = uts_dis;
+        //Pega o semáforo para calcular a média de temperaturas
+        if(xSemaphoreTake(sensorValuesSemaphore, t1s) == pdTRUE){
+            ESP_LOGI(decision,"Calculating avarage temperature and getting sensor values");
+            //Pega a temperatura média dos quatro sensores de temperatura
+            temperaturaMedia = (thr_tem[0] + thr_tem[1] + thr_tem[2] + thr_tem[3])/4;
+            umidade = shr_pct;
+            altura = uts_dis;
                 
-                //Devolve o semaforo
-                xSemaphoreGive(sensorValuesSemaphore);
-            }
+            //Devolve o semaforo
+            xSemaphoreGive(sensorValuesSemaphore);
+        }
 
-
-            //Verifica o que fazer caso 
+        if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
+            //Verifica o que fazer caso
             switch(bombaDagua){
                 case BOMBA_DESLIGADA:
                     ESP_LOGI(decision,"Water pump OFF");
@@ -2219,7 +2316,7 @@ void vDecision( void * pvParameters ){
                         ESP_LOGI(decision,"Turning on water pump (emergency activation)");
                         //Altera a variável para ligado
                         bombaDagua = BOMBA_LIGADA;
-                        
+                                
                         //Salva o tempo da última ativação
                         ultimaAtivacao = timeinfo;
 
@@ -2228,9 +2325,8 @@ void vDecision( void * pvParameters ){
 
                         //Atualiza o duty cycle e ativa a bomba
                         ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_ON));
-                        ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
-                    }    
-                    
+                        ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL)); 
+                    }         
                     //Verifica condição de ativação por tempo
                     ESP_LOGI(decision,"Checking turn on timed values for the water pump");
                     for(int i = 0; i< qtdAtivacao; i++){
@@ -2240,112 +2336,97 @@ void vDecision( void * pvParameters ){
                         }
                     }
 
-                    //Pega o semaforo de variaveis de controle
-                    if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
-                        //Verifica se é para ativar a bomba de ativação da bomba
-                        if(ativou){
-                            ESP_LOGI(decision,"Turning on water pump (timed activation)");
-                            //Marca qual o timestamp que passou e subtrai de ativações restantes
-                            for(int i = 0; i < qtdAtivacao; i++){
-                                if(condicaoAtivacao[i]){
-                                    timestampMarker[i] = 1;
-                                    --contaAtivacaoRestante;
-                                }
+                    //Verifica se é para ativar a bomba de ativação da bomba
+                    if(ativou){
+                        ESP_LOGI(decision,"Turning on water pump (timed activation)");
+                        //Marca qual o timestamp que passou e subtrai de ativações restantes
+                        for(int i = 0; i < qtdAtivacao; i++){
+                            if(condicaoAtivacao[i]){
+                                timestampMarker[i] = 1;
+                                --contaAtivacaoRestante;
                             }
-
-                            //Altera a variável para ligado
-                            bombaDagua = BOMBA_LIGADA;
-
-                            //Salva o tempo da última ativação
-                            ultimaAtivacao = timeinfo;
-                            
-                            //Com timer
-                            comTimer = 1;
-                            
-                            //Reseta variável de ativação
-                            ativou = false;
-
-                            //Atualiza o duty cycle e ativa a bomba
-                            ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_ON));
-                            ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
                         }
 
-                        //Devolve o semaforo de valores de controle
-                        xSemaphoreGive(dallyControlValuesSemaphore);
+                        //Altera a variável para ligado
+                        bombaDagua = BOMBA_LIGADA;
+
+                        //Salva o tempo da última ativação
+                        ultimaAtivacao = timeinfo;
+                                
+                        //Com timer
+                        comTimer = 1;
+                                
+                        //Reseta variável de ativação
+                        ativou = false;
+
+                        //Atualiza o duty cycle e ativa a bomba
+                        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_ON));
+                        ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
                     }
 
                     break;
                 case BOMBA_LIGADA:
                     ESP_LOGI(decision,"Water pump ON");
-                    
+                        
                     //Se a bomba for ativada sem timer
                     if(comTimer == 0){
                         //Calcula a diferença de tempo
                         timeDiff = tmDifferenceInMinutes(timeinfo, ultimaAtivacao);
-                        //Pega o semaforo de variaveis de controle
-                        if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
-                            //Se tiver passado do tempo máximo
-                            if(timeDiff >= tempoAtivacaoProvisoria){
-                                ESP_LOGI(decision,"Turning off water pump (emergency activation)");
-                                //Altera a variável para desligado
-                                bombaDagua = BOMBA_DESLIGADA;
 
-                                //Atualiza info de quando ativou pela última vez
-                                ultimaAtivacao = timeinfo;
+                        //Se tiver passado do tempo máximo
+                        if(timeDiff >= tempoAtivacaoProvisoria){
+                            ESP_LOGI(decision,"Turning off water pump (emergency activation)");
+                            //Altera a variável para desligado
+                            bombaDagua = BOMBA_DESLIGADA;
 
-                                //Soma o tempo que passou ativado
-                                tempoAtivacaoQuePassou += timeDiff;
+                            //Atualiza info de quando ativou pela última vez
+                            ultimaAtivacao = timeinfo;
 
-                                //Recalcula o tempo para ativar baseado no que já passou
-                                if(contaAtivacaoRestante > 0){
-                                    tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
-                                }
+                            //Soma o tempo que passou ativado
+                            tempoAtivacaoQuePassou += timeDiff;
 
-                                //Atualiza o duty cycle e desliga a bomba
-                                ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_OFF));
-                                ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+                            //Recalcula o tempo para ativar baseado no que já passou
+                            if(contaAtivacaoRestante > 0){
+                                tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
                             }
 
-                            //Devolve o semaforo de valores de controle
-                            xSemaphoreGive(dallyControlValuesSemaphore);
+                            //Atualiza o duty cycle e desliga a bomba
+                            ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_OFF));
+                            ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
                         }
+
                     }else{
-            
+                
                         //Calcula a diferença de tempo
                         timeDiff = tmDifferenceInMinutes(timeinfo, ultimaAtivacao);
 
-                        //Pega o semaforo de variaveis de controle
-                        if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
-                            ESP_LOGI(decision,"Turning off water pump (timed activation)");
-                            //Compara a diferença de tempo com o tempo de ativação por período
-                            if(timeDiff >= tempoAtivaçãoPorPeriodo){
-                                
-                                //Altera a variável para desligado
-                                bombaDagua = BOMBA_DESLIGADA;
+                        ESP_LOGI(decision,"Turning off water pump (timed activation)");
+                        //Compara a diferença de tempo com o tempo de ativação por período
+                        if(timeDiff >= tempoAtivaçãoPorPeriodo){
+                                    
+                            //Altera a variável para desligado
+                            bombaDagua = BOMBA_DESLIGADA;
 
-                                //Atualiza info de quando ativou pela última vez
-                                ultimaAtivacao = timeinfo;
+                            //Atualiza info de quando ativou pela última vez
+                            ultimaAtivacao = timeinfo;
 
-                                //Soma o tempo que passou ativado
-                                tempoAtivacaoQuePassou += timeDiff;
+                            //Soma o tempo que passou ativado
+                            tempoAtivacaoQuePassou += timeDiff;
 
-                                //Recalcula o tempo para ativar baseado no que já passou
-                                if(contaAtivacaoRestante > 0){
-                                    tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
-                                }
-
-                                //Atualiza o duty cycle e desliga a bomba
-                                ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_OFF));
-                                ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+                            //Recalcula o tempo para ativar baseado no que já passou
+                            if(contaAtivacaoRestante > 0){
+                                tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
                             }
-                            //Devolve o semaforo de valores de controle
-                            xSemaphoreGive(dallyControlValuesSemaphore);
+
+                            //Atualiza o duty cycle e desliga a bomba
+                            ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY_OFF));
+                            ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
                         }
                     }
-                    
-                    break;
+                        
+                break;
             }
-
+            
             //Pegando o tempo atual
             time(&tempoAgora);
             setenv("TZ", "UTC+3", 1);
@@ -2356,8 +2437,9 @@ void vDecision( void * pvParameters ){
             
             vSaveConfFile();
 
-            xSemaphoreGive(configFileSemaphore); 
+            xSemaphoreGive(dallyControlValuesSemaphore);
         }
+        
         //Criando mensagem para as filas
         ESP_LOGI(decision, "Creating queue Bomb status message and adding to queue");
         sprintf(message_WPM,"{\"DataHora\": \"%s\", \"Estado_Bomba\": %d, \"Ultima_Ativacao\": \"%s\", \"Quanto_tempo_ficou_ligado(Min)\": %d}", timeString , bombaDagua, timeStringUltimaAtivacao, tempoAtivacaoQuePassou);
@@ -2365,7 +2447,7 @@ void vDecision( void * pvParameters ){
         ESP_LOGI(decision,"%s",message_WPM);
         //Enviando mensagem para a fila 
         xQueueSend(funcionamento_WPM_queue_handle, message_WPM, t500ms);
-        vTaskDelay(t60s);
+        vTaskDelay(t300s);
     }
 }
 
@@ -2425,7 +2507,7 @@ void vDallyReset( void * pvParameters ){
             xSemaphoreGive(dallyControlValuesSemaphore);
         }
 
-        vTaskDelay(t30s);
+        vTaskDelay(t60s);
 
     }
 
@@ -2597,7 +2679,7 @@ void vSensorValues( void * pvParameters ){
             xSemaphoreGive(sensorValuesSemaphore);
         }
 
-        vTaskDelay(t60s);
+        vTaskDelay(t300s);
     }
 }
 
@@ -2703,6 +2785,6 @@ void vProcessosMqtt( void * pvParameters ){
             }
         }
         //Faz a tarefa esperar por 10 segundos
-        vTaskDelay(t10s);
+        vTaskDelay(t60s);
     }
 }
