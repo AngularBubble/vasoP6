@@ -108,7 +108,7 @@
 
 //____________________________DEFINIÇÃO_PARA_CONFIGURAÇÕES_DO_LEDC___________________________
 
-#define LEDC_BOMBA_AGUA 5 //GPIO5
+#define LEDC_BOMBA_AGUA 22 //GPIO22
 #define LEDC_TIMER LEDC_TIMER_0 //Timer do LEDC
 #define LEDC_CHANNEL LEDC_CHANNEL_0 //Canal LEDC
 #define LEDC_MODE LEDC_LOW_SPEED_MODE //Modo do LEDC
@@ -323,8 +323,7 @@ static esp_mqtt5_subscribe_property_config_t subscribe_property = {
     .no_local_flag = false,
     .retain_as_published_flag = false,
     .retain_handle = 0,
-    .is_share_subscribe = true,
-    .share_name = "group1",
+    .is_share_subscribe = false,
 };
 
 //_______PROPRIEDADES_DE_DESINSCRIÇÃO________
@@ -1019,6 +1018,7 @@ static void mqtt5_app_start(void){
         .session.last_will.qos = 1,
         .session.last_will.retain = true,
         .broker.verification.skip_cert_common_name_check = true,
+        .session.disable_clean_session = false,
     };
 
     //Construtor do Handler
@@ -2140,7 +2140,8 @@ void vSleepSetup( void * pvParameters ){
                                         break;
                                     }
                                 }
-                                
+                                gpio_deep_sleep_hold_en();
+                                gpio_pulldown_en(LEDC_BOMBA_AGUA);
                                 esp_sleep_enable_timer_wakeup(timeInMs);
                                 esp_deep_sleep_start();
                             }else{
