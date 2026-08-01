@@ -283,6 +283,7 @@ static int contaAtivacaoRestante;  //Conta quantas ativações restantes da bomb
 static int tempoAtivacaoQuePassou; //Conta quantas vezes passou com a bomba ligada
 static bool timestampMarker[quantidadeAtivaçõesMaxima]; //Marca quais tempos do dia ele já passaram
 struct tm ultimaAtivacao;   //Salva o valor da última ativação do motor
+static int nextDay;    //Variável que armazena o próximo dia
 
 //Variáveis que armazenam as horas fixas de ativação da bomba
 static int horaAtivacao[quantidadeAtivaçõesMaxima];  
@@ -506,6 +507,7 @@ static void vSaveConfFile(void){
             fprintf(fConfig, "TSM8 %d\n",timestampMarker[7]);
             fprintf(fConfig, "TSM9 %d\n",timestampMarker[8]);
             fprintf(fConfig, "TSM10 %d\n",timestampMarker[9]);
+            fprintf(fConfig, "ND %d\n",nextDay);
             
             fclose(fConfig);
             ESP_LOGI(saveConfFile,"File saved successfully!");
@@ -1177,7 +1179,7 @@ void SNTP_init_sta(void){
 #endif
     config.sync_cb = time_sync_notification_cb;     // Nota: Isso só é necessário se quisermos
 #ifdef CONFIG_SNTP_TIME_SYNC_METHOD_SMOOTH
-    config.smooth_sync = true;
+    config.smooth_sync = false;
 #endif
 
     esp_netif_sntp_init(&config);
@@ -1189,8 +1191,8 @@ void SNTP_init_sta(void){
     time_t now = 0;
     struct tm timeinfo = { 0 };
     int retry = 0;
-    const int retry_count = 15;
-    while (esp_netif_sntp_sync_wait(2000 / portTICK_PERIOD_MS) == ESP_ERR_TIMEOUT && ++retry < retry_count) {
+    const int retry_count = 5;
+    while (esp_netif_sntp_sync_wait(t5s) == ESP_ERR_TIMEOUT && ++retry < retry_count) {
         ESP_LOGI(SNTP, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
     }
     time(&now);
@@ -1888,6 +1890,17 @@ void vLoadingDefaultValues(){
                             ESP_LOGI(loadingDefaultValues, "Loaded timestamp marker 9 value, successfully!");
                         }
                     }
+                    //-------------------ND-------------------
+                    if(strcmp(varTag,"ND") == 0){
+                        nextDay = (int) strtol(varValue, &endPtr, 10);
+                        if(varValue == endPtr){
+                            ESP_LOGI(loadingDefaultValues, "Could not load next day value, using default: false");
+                            nextDay = 7;
+                        }else{
+                            ESP_LOGI(loadingDefaultValues, "Loaded next day value, successfully!");
+                        }
+                    }
+
                 }
                 fclose(fConfig);
                 ESP_LOGI(loadingDefaultValues,"Calculating activation time per period");
@@ -1910,7 +1923,7 @@ void vLoadingDefaultValues(){
                 tempoAtivacaoQuePassou = 0;
                 
                 ultimaAtivacao = timeinfo;
-
+                nextDay = 7;
                 for(int i = 0; i < quantidadeAtivaçõesMaxima; i++){
                     switch (i)
                     {
@@ -1936,6 +1949,16 @@ void vLoadingDefaultValues(){
                     }
                 }
             }
+            ESP_LOGI(loadingDefaultValues,"Loading new next day value...");
+            if(nextDay == 7){
+                if(timeinfo.tm_wday == 6){
+                    nextDay = 0;
+                }else{
+                    nextDay = timeinfo.tm_wday + 1;
+                }
+            }
+            ESP_LOGI(loadingDefaultValues,"Next day value loaded!");
+
             xSemaphoreGive(dallyControlValuesSemaphore);
         }
         xSemaphoreGive(configFileSemaphore);
@@ -2033,16 +2056,14 @@ void app_main(void){
     time(&now);
     localtime_r(&now, &timeinfo);
 
-    // O tempo foi redefinido? Se não, tm_year será (1970 - 1900).
-    if (timeinfo.tm_year < (2016 - 1900)) {
-        ESP_LOGI(SNTP, "Time is not set yet. Connecting to WiFi and getting time over NTP.");
+    ESP_LOGI(SNTP, "Time is not set yet. Connecting to WiFi and getting time over NTP.");
 
         //Chamando a função que atualiza a hora atual por SNTP;
-        SNTP_init_sta();
+    SNTP_init_sta();
 
         //Atualiza "now" com o tempo atual
-        time(&now);
-    }
+    time(&now);
+
 
     //Chamando a função que inicia MQTT
     mqtt5_app_start();
@@ -2127,16 +2148,10 @@ void vSleepSetup( void * pvParameters ){
                                 ESP_LOGI(sleepSetup, "No messages left on queue. OK");
                                 ESP_LOGI(sleepSetup,"Falling asleep");
                                 for(int i = 1; i<=5 ; i++){
-                                    if(timeinfo.tm_min+i == 60){
-                                        nextTime.tm_min = 0;
-                                        nextTime.tm_sec = 0;
-                                        timeInMs = (60-timeinfo.tm_sec)*1000000;
-                                        break;
-                                    }
                                     if((timeinfo.tm_min+i)%5 == 0){
-                                        nextTime.tm_min = timeinfo.tm_min+i;
+                                        nextTime.tm_min = (timeinfo.tm_min + i) % 60;
                                         nextTime.tm_sec = 0;
-                                        timeInMs = ((nextTime.tm_min - timeinfo.tm_min)*60 -timeinfo.tm_sec)*1000000;
+                                        timeInMs = ((uint64_t)(i * 60) - timeinfo.tm_sec) * 1000000ULL;
                                         break;
                                     }
                                 }
@@ -2456,8 +2471,6 @@ void vDecision( void * pvParameters ){
 void vDallyReset( void * pvParameters ){
 
     ESP_LOGI(sensorValues,"Iniciando tarefa de reset diario");
-    //Variável que armazena o próximo dia
-    int nextDay;
     
     //Variáveis para salvar os valores do RTC
     time_t tempoAgora;
@@ -2470,13 +2483,6 @@ void vDallyReset( void * pvParameters ){
     tzset();
     localtime_r(&tempoAgora, &timeinfo);
 
-    //Define qual dia será o próximo dia
-    if(timeinfo.tm_wday == 6){
-        nextDay = 0;
-    }else{
-        nextDay = timeinfo.tm_wday + 1;
-    }
-
     while(1){
 
         //Pegando o tempo atual
@@ -2486,23 +2492,25 @@ void vDallyReset( void * pvParameters ){
         localtime_r(&tempoAgora, &timeinfo);
 
         //Se o próximo dia for igual ao dia atual, significa que o dia passou
-        if(nextDay == timeinfo.tm_wday && xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
+        if(xSemaphoreTake(dallyControlValuesSemaphore, t1s) == pdTRUE){
 
-            //Define qual dia será o próximo dia
-            ESP_LOGI(SNTP, "Updating next day condition");
-            if(timeinfo.tm_wday == 6){
-                nextDay = 0;
-            }else{
-                nextDay = timeinfo.tm_wday + 1;
-            }
+            if(nextDay == timeinfo.tm_wday){
+                //Define qual dia será o próximo dia
+                ESP_LOGI(SNTP, "Updating next day condition");
+                if(timeinfo.tm_wday == 6){
+                    nextDay = 0;
+                }else{
+                    nextDay = timeinfo.tm_wday + 1;
+                }
 
-            //Carrega os valores padrões de controle do sistema
-            ESP_LOGI(SNTP, "Reseting dally values");
-            contaAtivacaoRestante = qtdAtivacao;
-            tempoAtivacaoQuePassou = 0;
-            tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/contaAtivacaoRestante;
-            for(int i = 0; i < qtdAtivacao; i++){
-                timestampMarker[i] = 0;
+                //Carrega os valores padrões de controle do sistema
+                ESP_LOGI(SNTP, "Reseting dally values");
+                contaAtivacaoRestante = qtdAtivacao;
+                tempoAtivacaoQuePassou = 0;
+                tempoAtivaçãoPorPeriodo = tempoAtivaçãoTotal/contaAtivacaoRestante;
+                for(int i = 0; i < qtdAtivacao; i++){
+                    timestampMarker[i] = 0;
+                }
             }
 
             xSemaphoreGive(dallyControlValuesSemaphore);
