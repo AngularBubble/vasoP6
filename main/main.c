@@ -1905,7 +1905,12 @@ void vLoadingDefaultValues(){
                 fclose(fConfig);
                 ESP_LOGI(loadingDefaultValues,"Calculating activation time per period");
 
-                tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
+                if(contaAtivacaoRestante == 0){
+                    tempoAtivaçãoPorPeriodo = 0;
+                }else{
+                    tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
+                }
+                
             }else{
                 ESP_LOGI(loadingDefaultValues, "Could not open config file, loading default values");
                 
@@ -2404,6 +2409,8 @@ void vDecision( void * pvParameters ){
                             //Recalcula o tempo para ativar baseado no que já passou
                             if(contaAtivacaoRestante > 0){
                                 tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
+                            }else{
+                                tempoAtivaçãoPorPeriodo = 0;
                             }
 
                             //Atualiza o duty cycle e desliga a bomba
@@ -2432,6 +2439,8 @@ void vDecision( void * pvParameters ){
                             //Recalcula o tempo para ativar baseado no que já passou
                             if(contaAtivacaoRestante > 0){
                                 tempoAtivaçãoPorPeriodo = (tempoAtivaçãoTotal - tempoAtivacaoQuePassou)/contaAtivacaoRestante;
+                            }else{
+                                tempoAtivaçãoPorPeriodo = 0;
                             }
 
                             //Atualiza o duty cycle e desliga a bomba
